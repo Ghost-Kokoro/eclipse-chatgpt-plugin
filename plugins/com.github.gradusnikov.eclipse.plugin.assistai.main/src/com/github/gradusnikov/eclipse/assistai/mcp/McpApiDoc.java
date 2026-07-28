@@ -52,6 +52,28 @@ public final class McpApiDoc
             Every tool argument is passed as a string, whatever the parameter means; a
             required parameter is marked `*`. Tools marked *long* run asynchronously and
             return an operation id to poll with `getOperationStatus`.
+
+            ## Results
+
+            A result arrives twice on one response. `structuredContent` is the object a
+            client branches on, and matches the shape named under **Returns**. A text
+            block carries the same data for clients that read only text.
+
+            The text block is a *rendering* of that object, not a copy of its
+            serialization: a string spanning more than one line is lifted into a fenced
+            code block, and the value it came from becomes `<rendered above as ...>`
+            naming the block that now holds it. So a source body, a diff or a stack
+            trace arrives as lines rather than as one escaped string. No field is
+            dropped, and `structuredContent` itself is never altered.
+
+            An empty result is an empty list and a count - never null, and never a
+            sentence saying nothing was found. A field that can be absent is absent as
+            `null` rather than as a sentinel or an invented value, so the advertised
+            output schema admits null for everything except a list and a primitive.
+
+            A failure is reported in the result rather than as a protocol error:
+            a `status` a caller can branch on, and `diagnostics` carrying a coded
+            `DiagnosticCode` with a message.
             """;
 
     private McpApiDoc()

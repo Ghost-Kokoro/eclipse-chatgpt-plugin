@@ -20,9 +20,11 @@ readonly DOC="plugins/com.github.gradusnikov.eclipse.plugin.assistai.main/docs/m
 
 echo "Regenerating ${DOC} from the tool annotations..."
 
+# The whole reactor, not -pl/-am on the test bundle: Tycho resolves the target platform
+# artifact before it builds the module that produces it, so a narrowed reactor fails with
+# "Could not resolve target platform specification artifact" on any machine that has not
+# already installed that artifact into ~/.m2.
 mvn --batch-mode --quiet \
-    -pl tests/com.github.gradusnikov.eclipse.plugin.assistai.main.tests \
-    -am \
     -Dtest=McpApiDocPDETest \
     -DfailIfNoTests=false \
     -DupdateMcpApiDoc=true \
