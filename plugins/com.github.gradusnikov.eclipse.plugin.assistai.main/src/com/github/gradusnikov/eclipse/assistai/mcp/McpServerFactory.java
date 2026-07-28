@@ -199,12 +199,15 @@ public class McpServerFactory
 
         if ( result instanceof Record payload )
         {
-            // The text block is the same serialization, per the MCP specification's
-            // backwards-compatibility guidance. There is deliberately no second,
-            // hand-written rendering: two renderings of one result drift apart, and
-            // a client parsing prose is what structured output exists to end.
-            builder.structuredContent( McpJson.toMap( payload ) );
-            builder.addContent( createTextContent( McpJson.toJson( payload ) ) );
+            // The text block carries the same data, per the MCP specification's
+            // backwards-compatibility guidance, but rendered rather than escaped: a
+            // multi-line string is fenced instead of collapsed into one line of \n.
+            // There is still no second, hand-written rendering - McpText is one rule
+            // over whatever the record holds, applied to the very map being sent as
+            // structuredContent, so the two cannot describe different outcomes.
+            Map<String, Object> content = McpJson.toMap( payload );
+            builder.structuredContent( content );
+            builder.addContent( createTextContent( McpText.render( content ) ) );
             return builder.build();
         }
 

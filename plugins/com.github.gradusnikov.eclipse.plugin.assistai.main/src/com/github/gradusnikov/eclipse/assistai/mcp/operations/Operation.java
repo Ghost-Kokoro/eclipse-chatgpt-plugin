@@ -13,6 +13,7 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.NullProgressMonitor;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
+import com.github.gradusnikov.eclipse.assistai.mcp.McpText;
 import com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult;
 
 /**
@@ -260,7 +261,13 @@ public class Operation
      * <p>
      * A structured result carries its own rendering, so it is unwrapped rather than
      * passed to {@code toString()} - which for a record would yield
-     * {@code TestRunResponse[status=..., ...]} instead of the JSON.
+     * {@code TestRunResponse[status=..., ...]} instead of the result.
+     * <p>
+     * A bare record is rendered exactly as {@code McpServerFactory.createCallToolResult}
+     * renders it, for the reason given on {@link #getStructuredResult()}: a run must not
+     * read differently depending on whether it was collected inline or polled for. These
+     * are the results most worth rendering well - a tool runs long precisely when it has
+     * a lot to say.
      */
     public String getResultText()
     {
@@ -270,7 +277,7 @@ public class Operation
         }
         if ( result instanceof Record payload )
         {
-            return McpJson.toJson( payload );
+            return McpText.render( McpJson.toMap( payload ) );
         }
         return Optional.ofNullable( result ).map( Object::toString ).orElse( "" );
     }

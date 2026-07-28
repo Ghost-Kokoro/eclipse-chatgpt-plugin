@@ -13,9 +13,11 @@ import com.fasterxml.jackson.databind.SerializationFeature;
  * Serializes tool payloads for the wire.
  * <p>
  * One mapper, one shape: the object a client reads from {@code structuredContent} and
- * the text a client reads from the content block are the same serialization, so they
- * cannot describe different outcomes. Hand-written renderings of the same data were
- * the thing structured output existed to remove.
+ * the text a client reads from the content block both come from this serialization, so
+ * they cannot describe different outcomes. {@link McpText} rearranges that text - a
+ * multi-line string is lifted into a fenced block rather than escaped into one line -
+ * but computes nothing of its own. Hand-written renderings of the same data were the
+ * thing structured output existed to remove.
  */
 public final class McpJson
 {
@@ -65,10 +67,11 @@ public final class McpJson
     /**
      * The payload as indented JSON.
      * <p>
-     * This is what goes in the text content block. The MCP specification asks a tool
-     * returning structured content to also return its serialized JSON as text, so that
-     * a client which only reads text still receives the same data - not a prose
-     * approximation of it.
+     * This is the JSON part of the text content block - all of it for a payload with no
+     * multi-line string in it, and everything {@link McpText} did not lift out for one
+     * that has. The MCP specification asks a tool returning structured content to also
+     * return that data as text, so a client which only reads text still receives the
+     * same fields - not a prose approximation of them.
      */
     public static String toJson( Object payload )
     {
