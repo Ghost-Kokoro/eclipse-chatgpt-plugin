@@ -27,6 +27,18 @@ public class McpOutputSchemasTest
         RED, GREEN
     }
 
+    /**
+     * Every Java reference can be null, so its schema admits null; only a primitive
+     * gets a bare type. Advertising the bare type for a reference made a payload fail
+     * a client's own validation the moment the field was null - which is precisely
+     * when the null carried information, such as "this resource has no modification
+     * stamp" or "no source location could be resolved".
+     */
+    private static final List<Object> NULLABLE_STRING = List.of( "string", "null" );
+    private static final List<Object> NULLABLE_INTEGER = List.of( "integer", "null" );
+    private static final List<Object> NULLABLE_OBJECT = List.of( "object", "null" );
+    private static final List<Object> NULLABLE_ARRAY = List.of( "array", "null" );
+
     record Leaf( String name, int count )
     {
     }
@@ -77,7 +89,7 @@ public class McpOutputSchemasTest
         Map<String, Object> schema = McpOutputSchemas.forType( Leaf.class );
 
         assertEquals( "object", schema.get( "type" ) );
-        assertEquals( "string", property( schema, "name" ).get( "type" ) );
+        assertEquals( NULLABLE_STRING, property( schema, "name" ).get( "type" ) );
         assertEquals( "integer", property( schema, "count" ).get( "type" ) );
     }
 
@@ -95,8 +107,8 @@ public class McpOutputSchemasTest
         Map<String, Object> schema = McpOutputSchemas.forType( Branch.class );
         Map<String, Object> leaf = property( schema, "leaf" );
 
-        assertEquals( "object", leaf.get( "type" ) );
-        assertEquals( "string", ( (Map<String, Object>) properties( leaf ).get( "name" ) ).get( "type" ) );
+        assertEquals( NULLABLE_OBJECT, leaf.get( "type" ) );
+        assertEquals( NULLABLE_STRING, ( (Map<String, Object>) properties( leaf ).get( "name" ) ).get( "type" ) );
     }
 
     @Test
@@ -104,9 +116,9 @@ public class McpOutputSchemasTest
     {
         Map<String, Object> leaves = property( McpOutputSchemas.forType( Branch.class ), "leaves" );
 
-        assertEquals( "array", leaves.get( "type" ) );
+        assertEquals( NULLABLE_ARRAY, leaves.get( "type" ) );
         Map<String, Object> items = (Map<String, Object>) leaves.get( "items" );
-        assertEquals( "object", items.get( "type" ) );
+        assertEquals( NULLABLE_OBJECT, items.get( "type" ) );
         assertTrue( ( (Map<String, Object>) items.get( "properties" ) ).containsKey( "count" ) );
     }
 
@@ -115,7 +127,7 @@ public class McpOutputSchemasTest
     {
         Map<String, Object> colour = property( McpOutputSchemas.forType( Branch.class ), "colour" );
 
-        assertEquals( "string", colour.get( "type" ) );
+        assertEquals( NULLABLE_STRING, colour.get( "type" ) );
         assertEquals( List.of( "RED", "GREEN" ), colour.get( "enum" ) );
     }
 
@@ -135,7 +147,7 @@ public class McpOutputSchemasTest
         Map<String, Object> schema = McpOutputSchemas.forType( SelfReferencing.class );
 
         assertEquals( "object", schema.get( "type" ) );
-        assertEquals( "object", property( schema, "child" ).get( "type" ) );
+        assertEquals( NULLABLE_OBJECT, property( schema, "child" ).get( "type" ) );
     }
 
     // ---- the shape actually shipped --------------------------------------
@@ -174,7 +186,7 @@ public class McpOutputSchemasTest
         Map<String, Object> versionAfter =
                 property( McpOutputSchemas.forType( EditResult.class ), "versionAfter" );
 
-        assertEquals( "integer",
+        assertEquals( NULLABLE_INTEGER,
                 ( (Map<String, Object>) properties( versionAfter ).get( "modificationStamp" ) ).get( "type" ) );
     }
 
@@ -184,7 +196,7 @@ public class McpOutputSchemasTest
         Map<String, Object> diagnostics =
                 property( McpOutputSchemas.forType( EditResult.class ), "diagnostics" );
 
-        assertEquals( "array", diagnostics.get( "type" ) );
+        assertEquals( NULLABLE_ARRAY, diagnostics.get( "type" ) );
         Map<String, Object> item = (Map<String, Object>) diagnostics.get( "items" );
         Map<String, Object> code = (Map<String, Object>) properties( item ).get( "code" );
         assertTrue( ( (List<String>) code.get( "enum" ) ).contains( "VERSION_CONFLICT" ) );

@@ -20,6 +20,11 @@ import java.util.Optional;
  * - which is the whole reason structured results exist. Writing those schemas by hand
  * beside the records they describe would guarantee they drift apart.
  * <p>
+ * A reference type's schema admits null; only a primitive gets a bare type. Getting
+ * that wrong is not cosmetic - a strict client validates the payload against this
+ * schema and discards a response that violates it, so a bare type made every tool with
+ * an absent optional field return nothing at all.
+ * <p>
  * Only the shapes this plugin actually returns are handled: records, enums, the
  * primitive wrappers, strings, collections and maps. Anything else degrades to an
  * unconstrained object rather than failing, because an imperfect schema is still
@@ -50,15 +55,30 @@ public final class McpOutputSchemas
         Map<String, Object> schema = describe( type, new ArrayDeque<>(), 0 );
 
         // MCP structuredContent is a JSON object, so a payload that is not one has to
-        // be wrapped rather than advertised as a bare array or scalar.
-        if ( !"object".equals( schema.get( "type" ) ) )
+        // be wrapped rather than advertised as a bare array or scalar. The declared type
+        // may be either "object" or ["object","null"], so membership is the test rather
+        // than equality.
+        if ( !describesAnObject( schema ) )
         {
             Map<String, Object> wrapper = new LinkedHashMap<>();
             wrapper.put( "type", "object" );
             wrapper.put( "properties", Map.of( "value", schema ) );
             return wrapper;
         }
+
+        // The root is not nullable even though a nested object of the same type would
+        // be: a tool either sends structuredContent or omits it, so "sometimes null"
+        // has no meaning here and would only invite a client to handle a case that
+        // cannot arise.
+        schema.put( "type", "object" );
         return schema;
+    }
+
+    /** Whether a schema's declared type includes {@code object}, boxed or not. */
+    private static boolean describesAnObject( Map<String, Object> schema )
+    {
+        Object declared = schema.get( "type" );
+        return declared instanceof Collection<?> types ? types.contains( "object" ) : "object".equals( declared );
     }
 
     private static Map<String, Object> describe( Type type, Deque<Class<?>> inProgress, int depth )
@@ -76,7 +96,7 @@ public final class McpOutputSchemas
             if ( Collection.class.isAssignableFrom( raw ) && arguments.length == 1 )
             {
                 Map<String, Object> schema = new LinkedHashMap<>();
-                schema.put( "type", "array" );
+                schema.put( "type", nullableType( "array" ) );
                 schema.put( "items", describe( arguments[0], inProgress, depth + 1 ) );
                 return schema;
             }
@@ -98,43 +118,47 @@ public final class McpOutputSchemas
 
         if ( raw == String.class || CharSequence.class.isAssignableFrom( raw ) )
         {
-            return typeSchema( "string" );
+            return typeSchema( "string", true );
         }
         if ( raw == boolean.class || raw == Boolean.class )
         {
-            return typeSchema( "boolean" );
+            return typeSchema( "boolean", !raw.isPrimitive() );
         }
         if ( raw == byte.class || raw == Byte.class || raw == short.class || raw == Short.class
                 || raw == int.class || raw == Integer.class || raw == long.class || raw == Long.class )
         {
-            return typeSchema( "integer" );
+            return typeSchema( "integer", !raw.isPrimitive() );
         }
         if ( raw == float.class || raw == Float.class || raw == double.class || raw == Double.class )
         {
-            return typeSchema( "number" );
+            return typeSchema( "number", !raw.isPrimitive() );
         }
         if ( raw.isEnum() )
         {
-            Map<String, Object> schema = typeSchema( "string" );
+            Map<String, Object> schema = typeSchema( "string", true );
             List<String> constants = new ArrayList<>();
             for ( Object constant : raw.getEnumConstants() )
             {
                 constants.add( ( (Enum<?>) constant ).name() );
             }
+            // null is listed alongside the constants because "enum" is checked
+            // independently of "type": permitting null in one and omitting it from the
+            // other rejects exactly the values the type says are allowed.
+            constants.add( null );
             schema.put( "enum", constants );
             return schema;
         }
         if ( raw.isArray() )
         {
             Map<String, Object> schema = new LinkedHashMap<>();
-            schema.put( "type", "array" );
+            schema.put( "type", nullableType( "array" ) );
             schema.put( "items", describe( raw.getComponentType(), inProgress, depth + 1 ) );
             return schema;
         }
         if ( Collection.class.isAssignableFrom( raw ) )
         {
             Map<String, Object> schema = new LinkedHashMap<>();
-            schema.put( "type", "array" );
+            schema.put( "type", nullableType( "array" ) );
             schema.put( "items", objectSchema() );
             return schema;
         }
@@ -155,7 +179,7 @@ public final class McpOutputSchemas
                             describe( component.getGenericType(), inProgress, depth + 1 ) );
                 }
                 Map<String, Object> schema = new LinkedHashMap<>();
-                schema.put( "type", "object" );
+                schema.put( "type", nullableType( "object" ) );
                 schema.put( "properties", properties );
                 return schema;
             }
@@ -174,13 +198,29 @@ public final class McpOutputSchemas
      */
     private static Map<String, Object> objectSchema()
     {
-        return typeSchema( "object" );
+        return typeSchema( "object", true );
     }
 
-    private static Map<String, Object> typeSchema( String jsonType )
+    private static Map<String, Object> typeSchema( String jsonType, boolean nullable )
     {
         Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put( "type", jsonType );
+        schema.put( "type", nullable ? nullableType( jsonType ) : jsonType );
         return schema;
+    }
+
+    /**
+     * A type that also admits null.
+     * <p>
+     * Every Java reference can be null, and this codebase uses that deliberately: a
+     * boxed {@code modificationStamp} is null when a resource has none rather than
+     * carrying a sentinel, and an absent source location is null rather than an invented
+     * path. Advertising the bare type made those payloads fail a client's own schema
+     * validation - so the tool returned nothing at all in exactly the cases the null was
+     * introduced to express. Only Java primitives get an unqualified type, because only
+     * they genuinely cannot be null.
+     */
+    private static List<Object> nullableType( String jsonType )
+    {
+        return List.of( jsonType, "null" );
     }
 }
