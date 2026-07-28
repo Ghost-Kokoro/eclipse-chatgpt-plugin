@@ -51,7 +51,7 @@ public class CacheResponsesPDETest
     {
         Map<String, Object> schema = (Map<String, Object>) properties.get( field );
         assertNotNull( schema, field + " must be advertised, saw " + properties.keySet() );
-        return (String) schema.get( "type" );
+        return SchemaTypes.carriedBy( schema );
     }
 
     // ---- fixtures --------------------------------------------------------

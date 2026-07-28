@@ -412,7 +412,7 @@ public class TestRunResponsePDETest
         Map<String, Object> source = propertiesOf( (Map<String, Object>) failure.get( "source" ) );
         assertTrue( source.containsKey( "projectName" ) );
         assertTrue( source.containsKey( "filePath" ) );
-        assertEquals( "integer", ( (Map<String, Object>) source.get( "line" ) ).get( "type" ) );
+        assertEquals( "integer", SchemaTypes.carriedBy( (Map<String, Object>) source.get( "line" ) ) );
     }
 
     @SuppressWarnings( "unchecked" )

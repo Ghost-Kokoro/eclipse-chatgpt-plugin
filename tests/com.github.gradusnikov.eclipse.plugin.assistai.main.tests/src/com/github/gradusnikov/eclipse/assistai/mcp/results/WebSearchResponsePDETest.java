@@ -93,7 +93,7 @@ public class WebSearchResponsePDETest
 
         // The caller's next act is to fetch one of these pages, so the URL has to be a
         // field it can read - not something to be scraped back out of a rendered list.
-        assertEquals( "string", ( (Map<String, Object>) result.get( "url" ) ).get( "type" ),
+        assertEquals( "string", SchemaTypes.carriedBy( (Map<String, Object>) result.get( "url" ) ),
                 result.keySet().toString() );
         assertTrue( result.containsKey( "title" ) );
         assertTrue( result.containsKey( "snippet" ) );

@@ -456,9 +456,9 @@ public class ResponseSchemaPDETest
 
         Map<String, Object> candidates = (Map<String, Object>) type.get( "candidates" );
         assertEquals( "array", candidates.get( "type" ) );
-        assertEquals( "string", ( (Map<String, Object>) candidates.get( "items" ) ).get( "type" ),
+        assertEquals( "string", SchemaTypes.carriedBy( (Map<String, Object>) candidates.get( "items" ) ),
                 "a candidate is the name itself, not an import statement inside a bullet" );
-        assertEquals( "integer", ( (Map<String, Object>) type.get( "lineNumber" ) ).get( "type" ) );
+        assertEquals( "integer", SchemaTypes.carriedBy( (Map<String, Object>) type.get( "lineNumber" ) ) );
     }
 
     @Test

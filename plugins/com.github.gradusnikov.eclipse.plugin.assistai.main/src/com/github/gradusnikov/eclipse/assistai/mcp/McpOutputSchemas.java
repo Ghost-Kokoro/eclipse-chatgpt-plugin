@@ -20,10 +20,25 @@ import java.util.Optional;
  * - which is the whole reason structured results exist. Writing those schemas by hand
  * beside the records they describe would guarantee they drift apart.
  * <p>
- * A reference type's schema admits null; only a primitive gets a bare type. Getting
- * that wrong is not cosmetic - a strict client validates the payload against this
- * schema and discards a response that violates it, so a bare type made every tool with
- * an absent optional field return nothing at all.
+ * A field that can be absent is advertised as admitting null. Getting that wrong is not
+ * cosmetic - a strict client validates the payload against this schema and discards a
+ * response that violates it, so a bare type made every tool with an absent optional
+ * field return nothing at all.
+ * <p>
+ * Three groups, by what the codebase actually does rather than by what Java permits:
+ * <ul>
+ * <li>Primitives cannot be null, so they keep a bare type.</li>
+ * <li>A <em>list is never null</em> - convention 7 says an empty result is an empty
+ * list and a count, never null and never a sentence - so an array keeps a bare type
+ * too. Declaring it nullable would contradict the contract every response record
+ * already keeps, and would weaken a guarantee callers rely on.</li>
+ * <li>Everything else - strings, boxed numbers, enums, nested records - can be absent,
+ * and several are deliberately so: a boxed {@code modificationStamp} is null when a
+ * resource has none rather than carrying a sentinel, a source location is null rather
+ * than invented, coverage is null when it was never requested.</li>
+ * </ul>
+ * The root is a bare object as well: a tool either sends {@code structuredContent} or
+ * omits it, so a nullable root would describe a case that cannot arise.
  * <p>
  * Only the shapes this plugin actually returns are handled: records, enums, the
  * primitive wrappers, strings, collections and maps. Anything else degrades to an
@@ -96,7 +111,7 @@ public final class McpOutputSchemas
             if ( Collection.class.isAssignableFrom( raw ) && arguments.length == 1 )
             {
                 Map<String, Object> schema = new LinkedHashMap<>();
-                schema.put( "type", nullableType( "array" ) );
+                schema.put( "type", "array" );
                 schema.put( "items", describe( arguments[0], inProgress, depth + 1 ) );
                 return schema;
             }
@@ -151,14 +166,14 @@ public final class McpOutputSchemas
         if ( raw.isArray() )
         {
             Map<String, Object> schema = new LinkedHashMap<>();
-            schema.put( "type", nullableType( "array" ) );
+            schema.put( "type", "array" );
             schema.put( "items", describe( raw.getComponentType(), inProgress, depth + 1 ) );
             return schema;
         }
         if ( Collection.class.isAssignableFrom( raw ) )
         {
             Map<String, Object> schema = new LinkedHashMap<>();
-            schema.put( "type", nullableType( "array" ) );
+            schema.put( "type", "array" );
             schema.put( "items", objectSchema() );
             return schema;
         }
@@ -209,15 +224,7 @@ public final class McpOutputSchemas
     }
 
     /**
-     * A type that also admits null.
-     * <p>
-     * Every Java reference can be null, and this codebase uses that deliberately: a
-     * boxed {@code modificationStamp} is null when a resource has none rather than
-     * carrying a sentinel, and an absent source location is null rather than an invented
-     * path. Advertising the bare type made those payloads fail a client's own schema
-     * validation - so the tool returned nothing at all in exactly the cases the null was
-     * introduced to express. Only Java primitives get an unqualified type, because only
-     * they genuinely cannot be null.
+     * A type that also admits null. See the class javadoc for which types get one.
      */
     private static List<Object> nullableType( String jsonType )
     {

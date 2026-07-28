@@ -81,3 +81,15 @@ Any test that uses Eclipse workspace, JDT, UI, platform, or OSGi runtime service
 
 ## Build
 Eclipse PDE project — for a full build, run `mvn clean verify` from the repo root via the shell (do not use Eclipse MCP tools for full builds).
+
+Two prerequisites, each of which fails the build in a way that does not name them:
+
+- **Maven 3.9+.** Tycho 5.0.2 on Maven 3.8 dies with `No implementation for
+  org.eclipse.tycho.targetplatform.TargetPlatformArtifactResolver was bound`.
+- **A registered `JavaSE-21` toolchain.** The parent pom sets `<useJDK>BREE</useJDK>`, so
+  Tycho compiles each bundle against a JDK matching its declared execution environment
+  rather than whatever Maven runs on. Without a `toolchains.xml` entry whose id is
+  `JavaSE-21` the compile fails with `no toolchain of type 'jdk' with id 'JavaSE-21'
+  found`, even when a JDK 21 is installed. Pass one with `mvn -t <file> ...`.
+
+A full run is roughly 13 minutes, most of it the PDE test bundle.

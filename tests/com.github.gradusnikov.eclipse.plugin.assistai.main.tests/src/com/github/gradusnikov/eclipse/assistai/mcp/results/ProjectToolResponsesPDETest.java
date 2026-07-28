@@ -260,8 +260,7 @@ public class ProjectToolResponsesPDETest
         Map<String, Object> java = propertiesOf( property( properties( ProjectPropertiesResponse.class ), "java" ) );
 
         assertEquals( "array", property( java, "sourceFolders" ).get( "type" ) );
-        assertEquals( "string", propertiesOf( property( properties( ProjectPropertiesResponse.class ), "java" ) )
-                .get( "outputLocation" ) instanceof Map<?, ?> map ? map.get( "type" ) : null );
+        assertEquals( "string", SchemaTypes.carriedBy( property( java, "outputLocation" ) ) );
         assertTrue( java.containsKey( "complianceLevel" ) );
         assertTrue( java.containsKey( "referencedProjects" ) );
     }
@@ -375,7 +374,11 @@ public class ProjectToolResponsesPDETest
     @Test
     public void javaDocKeepsTheBodyAsOneMarkdownString()
     {
-        assertEquals( "string", property( properties( JavaDocResponse.class ), "markdown" ).get( "type" ),
+        // One string, and nullable: a type that resolves but carries no documentation
+        // reports NO_JAVADOC with no body, rather than an empty string that a caller
+        // would have to tell apart from documentation that is genuinely blank.
+        assertEquals( List.of( "string", "null" ),
+                property( properties( JavaDocResponse.class ), "markdown" ).get( "type" ),
                 "rendered Markdown is one piece of text, the trade DiffResponse also makes" );
     }
 

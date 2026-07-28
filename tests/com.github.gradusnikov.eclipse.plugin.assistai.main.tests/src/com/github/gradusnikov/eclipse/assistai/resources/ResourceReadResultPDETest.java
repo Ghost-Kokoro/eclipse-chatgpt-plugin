@@ -63,7 +63,10 @@ public class ResourceReadResultPDETest
         Map<String, Object> stamp = (Map<String, Object>) ( (Map<String, Object>) version.get( "properties" ) )
                 .get( "modificationStamp" );
 
-        assertEquals( "integer", stamp.get( "type" ),
+        // Nullable, and that is the point: a resource with no stamp reports null rather
+        // than NULL_STAMP, which matches() would read as "no check requested". The
+        // schema has to admit the null or a validating client discards the whole read.
+        assertEquals( List.of( "integer", "null" ), stamp.get( "type" ),
                 "modificationStamp is what an edit passes as expectedModificationStamp" );
     }
 

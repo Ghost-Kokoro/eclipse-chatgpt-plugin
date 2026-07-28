@@ -97,7 +97,7 @@ public class RunnerResponsesPDETest
     {
         Map<String, Object> schema = (Map<String, Object>) properties.get( field );
         assertNotNull( schema, field + " should be advertised, saw " + properties.keySet() );
-        return (String) schema.get( "type" );
+        return SchemaTypes.carriedBy( schema );
     }
 
     // ---- active launches -------------------------------------------------

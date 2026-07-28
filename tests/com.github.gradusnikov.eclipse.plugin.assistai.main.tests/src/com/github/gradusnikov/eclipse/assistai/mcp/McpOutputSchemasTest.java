@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -32,12 +33,12 @@ public class McpOutputSchemasTest
      * gets a bare type. Advertising the bare type for a reference made a payload fail
      * a client's own validation the moment the field was null - which is precisely
      * when the null carried information, such as "this resource has no modification
-     * stamp" or "no source location could be resolved".
+     * stamp" or "no source location could be resolved". A list is exempt: convention 7
+     * makes an empty result an empty list, never null.
      */
     private static final List<Object> NULLABLE_STRING = List.of( "string", "null" );
     private static final List<Object> NULLABLE_INTEGER = List.of( "integer", "null" );
     private static final List<Object> NULLABLE_OBJECT = List.of( "object", "null" );
-    private static final List<Object> NULLABLE_ARRAY = List.of( "array", "null" );
 
     record Leaf( String name, int count )
     {
@@ -116,7 +117,7 @@ public class McpOutputSchemasTest
     {
         Map<String, Object> leaves = property( McpOutputSchemas.forType( Branch.class ), "leaves" );
 
-        assertEquals( NULLABLE_ARRAY, leaves.get( "type" ) );
+        assertEquals( "array", leaves.get( "type" ) );
         Map<String, Object> items = (Map<String, Object>) leaves.get( "items" );
         assertEquals( NULLABLE_OBJECT, items.get( "type" ) );
         assertTrue( ( (Map<String, Object>) items.get( "properties" ) ).containsKey( "count" ) );
@@ -128,7 +129,10 @@ public class McpOutputSchemasTest
         Map<String, Object> colour = property( McpOutputSchemas.forType( Branch.class ), "colour" );
 
         assertEquals( NULLABLE_STRING, colour.get( "type" ) );
-        assertEquals( List.of( "RED", "GREEN" ), colour.get( "enum" ) );
+        // null belongs among the constants too. A validator checks "enum" independently
+        // of "type", so a nullable enum whose constant list omits null rejects exactly
+        // the value the type says is allowed.
+        assertEquals( Arrays.asList( "RED", "GREEN", null ), colour.get( "enum" ) );
     }
 
     @Test
@@ -196,7 +200,7 @@ public class McpOutputSchemasTest
         Map<String, Object> diagnostics =
                 property( McpOutputSchemas.forType( EditResult.class ), "diagnostics" );
 
-        assertEquals( NULLABLE_ARRAY, diagnostics.get( "type" ) );
+        assertEquals( "array", diagnostics.get( "type" ) );
         Map<String, Object> item = (Map<String, Object>) diagnostics.get( "items" );
         Map<String, Object> code = (Map<String, Object>) properties( item ).get( "code" );
         assertTrue( ( (List<String>) code.get( "enum" ) ).contains( "VERSION_CONFLICT" ) );
