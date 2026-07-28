@@ -67,6 +67,17 @@ public class McpApiDocPDETest
     }
 
     @Test
+    public void noTwoShapesShareAName()
+    {
+        // Shapes are filed under their unqualified name so the anchor has no
+        // punctuation for a Markdown dialect to disagree about. That only works while
+        // the names are distinct, and a collision would silently point both links at
+        // whichever heading came first.
+        assertEquals( java.util.List.of(), McpApiDoc.duplicateShapeNames(),
+                "two result shapes share a simple name; rename one" );
+    }
+
+    @Test
     public void everyToolIsDocumented()
     {
         String generated = McpApiDoc.generate();

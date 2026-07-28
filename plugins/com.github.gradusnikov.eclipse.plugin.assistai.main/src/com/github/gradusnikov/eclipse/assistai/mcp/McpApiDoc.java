@@ -60,9 +60,11 @@ public final class McpApiDoc
 
     public static String generate()
     {
-        StringBuilder out = new StringBuilder( HEADER );
-        Set<Class<?>> shapes = new LinkedHashSet<>();
+        return generateInto( new StringBuilder( HEADER ), new LinkedHashSet<>() );
+    }
 
+    private static String generateInto( StringBuilder out, Set<Class<?>> shapes )
+    {
         List<Class<?>> servers = Arrays.stream( McpServerBuiltins.BUILT_IN_MCP_SERVERS )
                 .sorted( Comparator.comparing( McpApiDoc::serverName ) )
                 .toList();
@@ -141,11 +143,7 @@ public final class McpApiDoc
 
     private static void appendShape( StringBuilder out, Class<?> shape, Set<Class<?>> shapes )
     {
-        // An explicit anchor rather than one derived from the heading: a nested type
-        // renders as Outer.Inner, and every Markdown dialect slugs that punctuation
-        // differently, so deriving it produced links that resolved nowhere.
-        out.append( "\n<a id=\"" ).append( shapeAnchor( shape ) ).append( "\"></a>\n" );
-        out.append( "### `" ).append( simpleName( shape ) ).append( "`\n\n" );
+        out.append( "\n### `" ).append( shapeHeading( shape ) ).append( "`\n\n" );
 
         if ( shape.isEnum() )
         {
@@ -184,7 +182,7 @@ public final class McpApiDoc
         if ( clazz.isRecord() || clazz.isEnum() )
         {
             shapes.add( clazz );
-            return "[`" + simpleName( clazz ) + "`](#" + shapeAnchor( clazz ) + ")";
+            return "[`" + shapeHeading( clazz ) + "`](#" + anchor( shapeHeading( clazz ) ) + ")";
         }
         return "`" + simpleName( clazz ) + "`";
     }
@@ -202,10 +200,36 @@ public final class McpApiDoc
         return heading.toLowerCase().replace( ".", "" ).replace( " ", "-" );
     }
 
-    /** Matches the explicit anchor emitted before each shape heading. */
-    private static String shapeAnchor( Class<?> shape )
+    /**
+     * The name a shape is filed under.
+     * <p>
+     * Unqualified, even for a nested record: the heading is what the anchor is derived
+     * from, and {@code Outer.Inner} is slugged differently by every Markdown dialect -
+     * Eclipse's own preview resolves none of the forms this generator tried. An
+     * unqualified name has no punctuation to disagree about.
+     * {@link #duplicateShapeNames()} fails the build if two shapes ever collide on one.
+     */
+    private static String shapeHeading( Class<?> shape )
     {
-        return "shape-" + simpleName( shape ).replace( ".", "-" );
+        return shape.getEnclosingClass() == null
+                ? shape.getSimpleName()
+                : shape.getEnclosingClass().getSimpleName() + shape.getSimpleName();
+    }
+
+    /**
+     * Whether every shape reachable from a tool has a distinct unqualified name.
+     * <p>
+     * Exposed for the test rather than checked here: a collision is a documentation
+     * defect to be fixed by renaming a record, not something to paper over at render
+     * time with a suffix nobody can predict.
+     */
+    public static List<String> duplicateShapeNames()
+    {
+        Set<Class<?>> shapes = new LinkedHashSet<>();
+        generateInto( new StringBuilder(), shapes );
+
+        List<String> names = shapes.stream().map( McpApiDoc::shapeHeading ).toList();
+        return names.stream().distinct().filter( n -> names.indexOf( n ) != names.lastIndexOf( n ) ).toList();
     }
 
     private static String serverName( Class<?> server )

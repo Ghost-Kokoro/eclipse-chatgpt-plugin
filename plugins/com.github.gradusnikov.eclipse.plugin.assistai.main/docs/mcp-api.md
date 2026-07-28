@@ -40,7 +40,7 @@ Searches the web with DuckDuckGo. Returns totalResults and, for each hit, its ti
 |---|---|---|
 | `query` | \* | A search query |
 
-**Returns** [`WebSearchResponse`](#shape-WebSearchResponse)
+**Returns** [`WebSearchResponse`](#websearchresponse)
 
 ## eclipse-coder
 
@@ -57,7 +57,7 @@ Atomically applies a unified diff with one or more hunks to a workspace file. Va
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the patch is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what the patch would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `applyTextEdits`
 
@@ -71,7 +71,7 @@ Applies several replacements to one file as a single transaction: either all of 
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the batch is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report the resulting diff without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `createDirectories`
 
@@ -82,7 +82,7 @@ Creates a directory structure (recursively) in the specified project. Idempotent
 | `projectName` | \* | The name of the project where directories should be created |
 | `directoryPath` | \* | The path of directories to create, relative to the project root. Do not include project name! |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `createFile`
 
@@ -94,7 +94,7 @@ Create and open a new file in a specified project, creating any missing parent f
 | `filePath` | \* | The path to the file relative to the project root. Do not include project name! |
 | `content` | \* | The content to write to the file |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `deleteFile`
 
@@ -105,7 +105,7 @@ Deletes a file from the specified project. The content stays recoverable from Ec
 | `projectName` | \* | The name of the project containing the file |
 | `filePath` | \* | The path to the file relative to the project root. Do not include project name! |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `deleteLinesInFile`
 
@@ -120,7 +120,7 @@ Deletes a range of lines in a file, using 1-based line indexing. A range the fil
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the edit is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `formatFile`
 
@@ -131,7 +131,7 @@ Formats an entire file using its registered Eclipse editor's formatter (equivale
 | `projectName` | \* | The name of the project containing the file |
 | `filePath` | \* | The path to the file relative to the project root. Do not include project name! |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `getLineDelimiterPreference`
 
@@ -141,7 +141,7 @@ Reports the line delimiter Eclipse is configured to write in a project - the sam
 |---|---|---|
 | `projectName` |  | The name of the project. Omit to ask the workspace rather than a project. |
 
-**Returns** [`LineDelimiterPreference`](#shape-LineDelimiterPreference)
+**Returns** [`LineDelimiterPreference`](#linedelimiterpreference)
 
 ### `insertIntoFile`
 
@@ -156,7 +156,7 @@ Insert content into a file at a specified line position, using 1-based line inde
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the edit is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `moveResource`
 
@@ -168,7 +168,7 @@ Moves a file or folder to a different location within the project. The result na
 | `sourcePath` | \* | The path to the file or folder relative to the project root |
 | `targetPath` | \* | The target directory path relative to the project root where the resource should be moved to |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `normalizeLineDelimiters`
 
@@ -181,7 +181,7 @@ Rewrites a file so every line ends with the delimiter Eclipse is configured to u
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the edit is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `organizeImports`
 
@@ -192,7 +192,7 @@ Cleans up existing imports in a Java file using Eclipse's organize imports mecha
 | `projectName` | \* | The name of the project containing the Java file |
 | `filePath` | \* | The path to the Java file relative to the project root (e.g., 'src/com/example/MyClass.java') |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `organizeImportsInPackage` *(long)*
 
@@ -203,7 +203,7 @@ Cleans up existing imports in all Java files within a package by removing unused
 | `projectName` | \* | The name of the project containing the package |
 | `packageName` | \* | The fully qualified package name (e.g., 'com.example.mypackage') |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `refactorExtractTypeToNewFile` *(long)*
 
@@ -215,7 +215,7 @@ Extracts a nested Java class, interface, enum, or record into a new top-level Ja
 | `filePath` | \* | The path to the Java file relative to the project root (e.g., 'src/com/example/Outer.java') |
 | `nestedTypeName` | \* | The nested type to extract, relative to the compilation unit (e.g., 'Outer.Inner') |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `refactorMoveJavaType` *(long)*
 
@@ -227,7 +227,7 @@ Moves a Java class/interface/enum to a different package using Eclipse's refacto
 | `filePath` | \* | The path to the Java file relative to the project root (e.g., 'src/com/example/MyClass.java') |
 | `targetPackage` | \* | The fully qualified target package name (e.g., 'com.example.newpackage') |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `refactorRenameJavaType` *(long)*
 
@@ -239,7 +239,7 @@ Renames a Java class/interface/enum using Eclipse's refactoring mechanism. This 
 | `filePath` | \* | The path to the Java file relative to the project root (e.g., 'src/com/example/MyClass.java') |
 | `newTypeName` | \* | The new name for the Java type (without .java extension, e.g., 'NewClassName') |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `refactorRenamePackage` *(long)*
 
@@ -251,7 +251,7 @@ Renames a Java package using Eclipse's refactoring mechanism. This renames the p
 | `packageName` | \* | The current fully qualified package name (e.g., 'com.example.oldpackage') |
 | `newPackageName` | \* | The new package name - can be fully qualified (e.g., 'com.example.newpackage') or just the last segment to rename |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `renameFile`
 
@@ -263,7 +263,7 @@ Renames a file in the specified project. The result names the renamed file as pr
 | `filePath` | \* | The path to the file relative to the project root. Do not include project name! |
 | `newFileName` | \* | The new name for the file |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `replaceFileContent`
 
@@ -277,7 +277,7 @@ Replaces the entire content of a file with new content. Pass expectedModificatio
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the edit is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `replaceString`
 
@@ -296,7 +296,7 @@ Find and replace a specific string in a file, with optional line range for targe
 | `expectedModificationStamp` |  | The modificationStamp reported by an earlier read or edit of this file. When supplied, the edit is rejected with VERSION_CONFLICT if the file has changed since. |
 | `preview` |  | If 'true', report what would change without modifying the file. Default: false |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ### `undoEdit`
 
@@ -307,7 +307,7 @@ Undoes the last edit to a file by restoring the newest state from Eclipse's Loca
 | `projectName` | \* | The name of the project containing the file |
 | `filePath` | \* | The path to the file relative to the project root. Do not include project name! |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ## eclipse-context
 
@@ -321,13 +321,13 @@ Shows a unified diff between the current file content and a Local History versio
 | `filePath` | \* | Path to the file relative to the project root |
 | `historyTimestamp` | \* | The historyTimestamp to compare against, from getFileHistory |
 
-**Returns** [`DiffResponse`](#shape-DiffResponse)
+**Returns** [`DiffResponse`](#diffresponse)
 
 ### `getCacheStats`
 
 Gets resource cache statistics: the number of cached resources and the estimated tokens they occupy, each against the limit at which the cache starts evicting the least recently used entry. Use listCachedResources for what is actually in there.
 
-**Returns** [`CacheStatsResponse`](#shape-CacheStatsResponse)
+**Returns** [`CacheStatsResponse`](#cachestatsresponse)
 
 ### `getCachedResource`
 
@@ -337,7 +337,7 @@ Gets the content of a specific cached resource by URI without re-reading from di
 |---|---|---|
 | `resourceUri` | \* | The URI of the cached resource (e.g. 'workspace:///ProjectName/src/File.java' or 'jdt:///com.example.MyClass') |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getFileHistory`
 
@@ -349,7 +349,7 @@ Lists the Local History versions of a file maintained by Eclipse. Shows the hist
 | `filePath` | \* | Path to the file relative to the project root |
 | `maxEntries` |  | Maximum number of history entries to show (default: 20) |
 
-**Returns** [`FileHistoryResponse`](#shape-FileHistoryResponse)
+**Returns** [`FileHistoryResponse`](#filehistoryresponse)
 
 ### `getFileHistoryContent`
 
@@ -361,13 +361,13 @@ Gets the content of a specific Local History version of a file. Returns the exac
 | `filePath` | \* | Path to the file relative to the project root |
 | `historyTimestamp` | \* | The historyTimestamp of the version, from getFileHistory. Identifies the same content even after further saves, which a positional index does not. |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `listCachedResources`
 
 Lists all resources currently cached in the Eclipse workspace context. Each entry gives the URI getCachedResource takes, the resource type, the project and project-relative filePath when it is a workspace file, when it was cached, its modificationStamp and an estimated token count. Use this to see what files, classes, and data the user has been working with.
 
-**Returns** [`CachedResourcesResponse`](#shape-CachedResourcesResponse)
+**Returns** [`CachedResourcesResponse`](#cachedresourcesresponse)
 
 ### `restoreFileVersion`
 
@@ -379,7 +379,7 @@ Restores a file to a specific Local History version. The current content becomes
 | `filePath` | \* | Path to the file relative to the project root |
 | `historyTimestamp` | \* | The historyTimestamp of the version to restore, from getFileHistory |
 
-**Returns** [`EditResult`](#shape-EditResult)
+**Returns** [`EditResult`](#editresult)
 
 ## eclipse-git
 
@@ -392,7 +392,7 @@ Stages files for the next commit. Use '.' to stage all changes (new, modified, a
 | `projectName` | \* | The Eclipse project name |
 | `filePattern` | \* | File pattern to add (e.g., '.' for all, 'src/com/example/MyClass.java' for a specific file) |
 
-**Returns** [`GitStageResponse`](#shape-GitStageResponse)
+**Returns** [`GitStageResponse`](#gitstageresponse)
 
 ### `gitBranch`
 
@@ -403,7 +403,7 @@ Lists the branches of the repository. Local branches are in 'branches', each wit
 | `projectName` | \* | The Eclipse project name |
 | `includeRemote` |  | If 'true', includes remote-tracking branches. Default: false |
 
-**Returns** [`GitBranchResponse`](#shape-GitBranchResponse)
+**Returns** [`GitBranchResponse`](#gitbranchresponse)
 
 ### `gitCheckout`
 
@@ -414,7 +414,7 @@ Checks out a branch, switching the working tree to that branch. status is SWITCH
 | `projectName` | \* | The Eclipse project name |
 | `branchName` | \* | The branch name to checkout |
 
-**Returns** [`GitCheckoutResponse`](#shape-GitCheckoutResponse)
+**Returns** [`GitCheckoutResponse`](#gitcheckoutresponse)
 
 ### `gitCommit`
 
@@ -425,7 +425,7 @@ Commits the currently staged changes with the given message. Returns the new com
 | `projectName` | \* | The Eclipse project name |
 | `message` | \* | The commit message |
 
-**Returns** [`GitCommitResponse`](#shape-GitCommitResponse)
+**Returns** [`GitCommitResponse`](#gitcommitresponse)
 
 ### `gitCreateBranch`
 
@@ -449,7 +449,7 @@ Deletes a branch. Cannot delete the currently checked-out branch. deleted says w
 | `branchName` | \* | Name of the branch to delete |
 | `force` |  | If 'true', force-deletes even if the branch is not fully merged. Default: false |
 
-**Returns** [`GitDeleteBranchResponse`](#shape-GitDeleteBranchResponse)
+**Returns** [`GitDeleteBranchResponse`](#gitdeletebranchresponse)
 
 ### `gitDiff`
 
@@ -462,7 +462,7 @@ Shows a unified diff for staged or unstaged changes, optionally limited to comma
 | `pathFilter` |  | Optional comma-separated file or directory paths relative to the Eclipse project |
 | `ignoreWhitespace` |  | If 'true', ignores whitespace when formatting hunks. Default: false |
 
-**Returns** [`GitDiffResponse`](#shape-GitDiffResponse)
+**Returns** [`GitDiffResponse`](#gitdiffresponse)
 
 ### `gitLog`
 
@@ -473,7 +473,7 @@ Lists the most recent commits of the Git repository associated with the project.
 | `projectName` | \* | The Eclipse project name |
 | `maxCount` |  | Maximum number of commits to show (default: 20) |
 
-**Returns** [`GitLogResponse`](#shape-GitLogResponse)
+**Returns** [`GitLogResponse`](#gitlogresponse)
 
 ### `gitReadFile`
 
@@ -496,7 +496,7 @@ Unstages files from the index (equivalent to 'git reset HEAD <file>'). Does not 
 | `projectName` | \* | The Eclipse project name |
 | `filePattern` | \* | File pattern to unstage (e.g., '.' for all, or a specific file path) |
 
-**Returns** [`GitStageResponse`](#shape-GitStageResponse)
+**Returns** [`GitStageResponse`](#gitstageresponse)
 
 ### `gitStagePatch`
 
@@ -507,7 +507,7 @@ Stages specific changes from a unified diff patch into the index without modifyi
 | `projectName` | \* | The Eclipse project name |
 | `patch` | \* | A unified diff patch string to stage. Must include file headers (--- a/path, +++ b/path) and @@ hunk headers. |
 
-**Returns** [`GitStagePatchResponse`](#shape-GitStagePatchResponse)
+**Returns** [`GitStagePatchResponse`](#gitstagepatchresponse)
 
 ### `gitStash`
 
@@ -518,7 +518,7 @@ Stashes the current working directory and index changes, reverting the working t
 | `projectName` | \* | The Eclipse project name |
 | `message` |  | Optional message to describe the stash |
 
-**Returns** [`GitStashResponse`](#shape-GitStashResponse)
+**Returns** [`GitStashResponse`](#gitstashresponse)
 
 ### `gitStashList`
 
@@ -528,7 +528,7 @@ Lists the stash entries, most recent first. Each entry reports its index, its st
 |---|---|---|
 | `projectName` | \* | The Eclipse project name |
 
-**Returns** [`GitStashListResponse`](#shape-GitStashListResponse)
+**Returns** [`GitStashListResponse`](#gitstashlistresponse)
 
 ### `gitStashPop`
 
@@ -538,7 +538,7 @@ Applies the most recent stash entry and, if that succeeded, removes it. status i
 |---|---|---|
 | `projectName` | \* | The Eclipse project name |
 
-**Returns** [`GitStashPopResponse`](#shape-GitStashPopResponse)
+**Returns** [`GitStashPopResponse`](#gitstashpopresponse)
 
 ### `gitStatus`
 
@@ -548,7 +548,7 @@ Reports the working tree status of the Git repository associated with the projec
 |---|---|---|
 | `projectName` | \* | The Eclipse project name (use listProjects to find it) |
 
-**Returns** [`GitStatusResponse`](#shape-GitStatusResponse)
+**Returns** [`GitStatusResponse`](#gitstatusresponse)
 
 ## eclipse-ide
 
@@ -561,7 +561,7 @@ Applies one quick fix proposal to a compilation problem. Use getCompilationError
 | `markerId` | \* | The Marker ID of the problem (from getCompilationErrors or getQuickFixes) |
 | `proposalIndex` | \* | The 0-based index of the quick fix proposal to apply (from the quick fixes list) |
 
-**Returns** [`QuickFixResponse`](#shape-QuickFixResponse)
+**Returns** [`QuickFixResponse`](#quickfixresponse)
 
 ### `explainTypeResolution`
 
@@ -572,7 +572,7 @@ Explains how a Java type resolves on one Eclipse project's classpath: which clas
 | `projectName` | \* | The exact open Eclipse Java project name |
 | `fullyQualifiedClassName` | \* | The fully qualified Java type name |
 
-**Returns** [`TypeResolutionResponse`](#shape-TypeResolutionResponse)
+**Returns** [`TypeResolutionResponse`](#typeresolutionresponse)
 
 ### `fileSearch` *(long)*
 
@@ -584,7 +584,7 @@ Searches for a plain substring in workspace files using Eclipse's text search en
 | `fileNamePatterns` |  | Optional comma-separated file name patterns (e.g. "*.java,*.xml"). If omitted, all files are searched. |
 | `maxResults` |  | Maximum number of matches to return (default: 200). The response reports whether it was truncated. |
 
-**Returns** [`SearchResponse`](#shape-SearchResponse)
+**Returns** [`SearchResponse`](#searchresponse)
 
 ### `fileSearchRegExp` *(long)*
 
@@ -596,7 +596,7 @@ Searches workspace files using a Java regular expression via Eclipse's text sear
 | `fileNamePatterns` |  | Optional comma-separated file name patterns (e.g. "*.java,*.xml"). If omitted, all files are searched. |
 | `maxResults` |  | Maximum number of matches to return (default: 200). The response reports whether it was truncated. |
 
-**Returns** [`SearchResponse`](#shape-SearchResponse)
+**Returns** [`SearchResponse`](#searchresponse)
 
 ### `findFiles`
 
@@ -607,7 +607,7 @@ Finds workspace files matching the given glob patterns. Each file reports projec
 | `fileNamePatterns` |  | Comma-separated glob patterns (e.g. "*.java, pom.xml"). If omitted, defaults to '*' |
 | `maxResults` |  | Maximum number of results to return (default: 200) |
 
-**Returns** [`FileListResponse`](#shape-FileListResponse)
+**Returns** [`FileListResponse`](#filelistresponse)
 
 ### `findReferences` *(long)*
 
@@ -618,7 +618,7 @@ Finds all references/usages of a Java type, method, or field across the entire w
 | `fullyQualifiedClassName` | \* | The fully qualified name of the class containing the element |
 | `elementName` |  | Optional method or field name to search for. If omitted, searches for references to the class itself. |
 
-**Returns** [`ReferencesResponse`](#shape-ReferencesResponse)
+**Returns** [`ReferencesResponse`](#referencesresponse)
 
 ### `findTestClasses`
 
@@ -628,7 +628,7 @@ Finds test classes and separates plain JUnit tests from PDE harness tests, which
 |---|---|---|
 | `projectName` | \* | The exact Eclipse project name to search (use listProjects to find it) |
 
-**Returns** [`TestClassesResponse`](#shape-TestClassesResponse)
+**Returns** [`TestClassesResponse`](#testclassesresponse)
 
 ### `formatCode`
 
@@ -650,7 +650,7 @@ Returns the outline of a Java class: its declaration plus fields, method signatu
 | `fullyQualifiedClassName` | \* | A fully qualified class name (e.g. 'com.example.MyClass') |
 | `includeFields` |  | Whether to include field declarations (default: true) |
 
-**Returns** [`ClassOutlineResponse`](#shape-ClassOutlineResponse)
+**Returns** [`ClassOutlineResponse`](#classoutlineresponse)
 
 ### `getCompilationErrors`
 
@@ -662,7 +662,7 @@ Retrieves compilation errors and problems from the current workspace or a specif
 | `severity` |  | Filter by severity level: 'ERROR', 'WARNING', or 'ALL' (default) |
 | `maxResults` |  | Maximum number of problems to return (default: 50) |
 
-**Returns** [`CompilationProblemsResponse`](#shape-CompilationProblemsResponse)
+**Returns** [`CompilationProblemsResponse`](#compilationproblemsresponse)
 
 ### `getConsoleOutput`
 
@@ -674,19 +674,19 @@ Retrieves the recent output of Eclipse console(s). A console is read from its en
 | `maxLines` |  | Maximum number of lines to retrieve (default: 100) |
 | `includeAllConsoles` |  | If 'true', includes output from all available consoles. Default: 'false' |
 
-**Returns** [`ConsoleOutputResponse`](#shape-ConsoleOutputResponse)
+**Returns** [`ConsoleOutputResponse`](#consoleoutputresponse)
 
 ### `getCurrentlyOpenedFile`
 
 Gets the file the user currently has open in the Eclipse editor, with its exact content. projectName and filePath are what the reading and editing tools take, and version.modificationStamp is the token an edit passes as expectedModificationStamp. status is FAILED when no workspace file is open - a state of the workbench, not an error.
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getEditorSelection`
 
 Gets the text the user has selected in the active editor, as a range read of the open file. returnedRange gives the exact 1-based start and end line and column of the selection, and totalLines the size of the whole file. Nothing selected is an OK result with a zero-width range and empty content; status is FAILED only when no text editor is open.
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getEffectivePom` *(long)*
 
@@ -708,7 +708,7 @@ Returns one class's source with the import block and the bodies of the methods y
 | `excludeImports` |  | Whether to collapse the import block (default: true) |
 | `methodNames` |  | Comma-separated method names to fully expand. Methods not listed are collapsed to signatures. If omitted, all methods are expanded. |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getImportSuggestions` *(long)*
 
@@ -719,7 +719,7 @@ Finds import candidates for the unresolved types in a Java file. Each candidate 
 | `projectName` | \* | The name of the project containing the file |
 | `filePath` | \* | The path to the Java file relative to the project root |
 
-**Returns** [`ImportSuggestionsResponse`](#shape-ImportSuggestionsResponse)
+**Returns** [`ImportSuggestionsResponse`](#importsuggestionsresponse)
 
 ### `getJavaDoc`
 
@@ -729,7 +729,7 @@ Gets the JavaDoc of a Java type as Markdown, with each of its members' declarati
 |---|---|---|
 | `fullyQualifiedName` | \* | A fully qualified name of the compilation unit |
 
-**Returns** [`JavaDocResponse`](#shape-JavaDocResponse)
+**Returns** [`JavaDocResponse`](#javadocresponse)
 
 ### `getMarkdownOutline`
 
@@ -740,7 +740,7 @@ Returns the heading structure (table of contents) of a Markdown file. Each headi
 | `projectName` | \* | The name of the project containing the Markdown file |
 | `resourcePath` | \* | The path to the Markdown file relative to the project root (e.g., 'docs/README.md') |
 
-**Returns** [`MarkdownOutlineResponse`](#shape-MarkdownOutlineResponse)
+**Returns** [`MarkdownOutlineResponse`](#markdownoutlineresponse)
 
 ### `getMarkdownSection`
 
@@ -753,7 +753,7 @@ Reads one section of a Markdown file, addressed by heading text or by its 1-base
 | `heading` | \* | The heading to find â either a 1-based index from the outline, or a text substring to match (case-insensitive) |
 | `includeSubsections` |  | If 'true', includes all subsections under the matched heading. If 'false', returns only the content up to the next heading of any level. Default: true |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getMethodCallHierarchy` *(long)*
 
@@ -766,7 +766,7 @@ Finds the callers of a method, and what that method calls, to understand how it 
 | `methodSignature` |  | The signature of the method (optional, required if method is overloaded) |
 | `maxDepth` |  | Maximum depth of the call hierarchy to retrieve (default: 3) |
 
-**Returns** [`CallHierarchyResponse`](#shape-CallHierarchyResponse)
+**Returns** [`CallHierarchyResponse`](#callhierarchyresponse)
 
 ### `getMethodSource`
 
@@ -779,7 +779,7 @@ Returns the source of specific method(s) of one class. Accepts comma-separated m
 | `methodSignature` |  | Optional parameter type hint to disambiguate overloaded methods (e.g. 'String') |
 | `includeJavadoc` |  | Whether to include Javadoc comments (default: true) |
 
-**Returns** [`MethodSourceResponse`](#shape-MethodSourceResponse)
+**Returns** [`MethodSourceResponse`](#methodsourceresponse)
 
 ### `getProjectDependencies` *(long)*
 
@@ -789,7 +789,7 @@ Lists the dependencies one project's pom declares. These come from the Maven pro
 |---|---|---|
 | `projectName` | \* | The name of the Maven project |
 
-**Returns** [`MavenDependenciesResponse`](#shape-MavenDependenciesResponse)
+**Returns** [`MavenDependenciesResponse`](#mavendependenciesresponse)
 
 ### `getProjectLayout`
 
@@ -801,7 +801,7 @@ Gets the file and folder tree of a project as nested nodes. Every node carries t
 | `scopePath` |  | Optional path relative to the project root to limit the listing (e.g., 'src/main/java/com/example'). If omitted, shows the entire project. |
 | `maxDepth` |  | Optional maximum depth of the directory tree to display (e.g., '3' for 3 levels deep). If omitted, shows all levels. |
 
-**Returns** [`ProjectLayoutResponse`](#shape-ProjectLayoutResponse)
+**Returns** [`ProjectLayoutResponse`](#projectlayoutresponse)
 
 ### `getProjectProperties`
 
@@ -811,7 +811,7 @@ Gets how a project is configured: its nature ids, the build descriptors in its r
 |---|---|---|
 | `projectName` | \* | The name of the project to analyze |
 
-**Returns** [`ProjectPropertiesResponse`](#shape-ProjectPropertiesResponse)
+**Returns** [`ProjectPropertiesResponse`](#projectpropertiesresponse)
 
 ### `getSource`
 
@@ -821,7 +821,7 @@ Get source for a workspace or referenced-library class. Prefers original/attache
 |---|---|---|
 | `fullyQualifiedClassName` | \* | A fully qualified class name of the Java class |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `getTypeHierarchy` *(long)*
 
@@ -831,19 +831,19 @@ Retrieves the type hierarchy of a Java class or interface as three separate list
 |---|---|---|
 | `fullyQualifiedClassName` | \* | The fully qualified name of the class (e.g., 'com.example.MyClass') |
 
-**Returns** [`TypeHierarchyResponse`](#shape-TypeHierarchyResponse)
+**Returns** [`TypeHierarchyResponse`](#typehierarchyresponse)
 
 ### `listMavenProjects`
 
 Lists the Maven projects m2e knows about in the workspace. Each entry reports both names: the Eclipse projectName every other tool takes, and the groupId/artifactId/version/packaging a Maven command line takes. The two are frequently different strings.
 
-**Returns** [`MavenProjectListResponse`](#shape-MavenProjectListResponse)
+**Returns** [`MavenProjectListResponse`](#mavenprojectlistresponse)
 
 ### `listProjects`
 
 Lists the workspace projects. Each entry reports the projectName every other tool takes, whether the project is open (a closed one cannot be read, searched or built until openProject runs), its nature ids (org.eclipse.jdt.core.javanature for Java, org.eclipse.m2e.core.maven2Nature for Maven) and its filesystem location.
 
-**Returns** [`ProjectListResponse`](#shape-ProjectListResponse)
+**Returns** [`ProjectListResponse`](#projectlistresponse)
 
 ### `openProject`
 
@@ -853,7 +853,7 @@ Opens or imports a directory into the Eclipse workspace as a project. If the dir
 |---|---|---|
 | `directoryPath` | \* | The absolute filesystem path to the directory to open as a project |
 
-**Returns** [`OpenProjectResponse`](#shape-OpenProjectResponse)
+**Returns** [`OpenProjectResponse`](#openprojectresponse)
 
 ### `readImageResource`
 
@@ -864,7 +864,7 @@ Reads a raster image from an Eclipse workspace project and returns it as MCP ima
 | `projectName` | \* | The name of the project containing the image |
 | `resourcePath` | \* | The image path relative to the project root |
 
-**Returns** [`McpSchema.ImageContent`](#shape-McpSchema-ImageContent)
+**Returns** [`McpSchemaImageContent`](#mcpschemaimagecontent)
 
 ### `readProjectResource`
 
@@ -878,7 +878,7 @@ Read the content of a text resource from a specified project. Returns the exact 
 | `endLine` |  | Optional 1-based end line to read to (inclusive). If omitted, reads to the end. |
 | `excludeImports` |  | If 'true', omits a Java import block to save tokens. The omitted lines are reported in omittedRanges. Default: 'false' |
 
-**Returns** [`ResourceReadResult`](#shape-ResourceReadResult)
+**Returns** [`ResourceReadResult`](#resourcereadresult)
 
 ### `runJUnitTests` *(long)*
 
@@ -894,7 +894,7 @@ Starts a JUnit test run asynchronously and returns an operationId for polling. S
 | `withCoverage` |  | If 'true', runs tests with code coverage (requires EclEmma/JaCoCo installed). Default: false |
 | `launcherName` |  | Optional name of a saved launch configuration to use as the base (use (eclipse-runner MCP server).listLaunchConfigurations with typeFilter='junit' to find it). When set, all settings from that config are reused (VM args, classpath, env vars, etc.) and only the test target is overridden. |
 
-**Returns** [`TestRunResponse`](#shape-TestRunResponse)
+**Returns** [`TestRunResponse`](#testrunresponse)
 
 ### `runMavenBuild` *(long)*
 
@@ -919,7 +919,7 @@ Search and replace across multiple files in the workspace using Eclipse's text s
 | `replacementText` | \* | Replacement text (can be empty) |
 | `fileNamePatterns` |  | Optional comma-separated file name patterns (e.g. "*.java,*.xml"). If omitted, all files are searched. |
 
-**Returns** [`SearchReplaceResponse`](#shape-SearchReplaceResponse)
+**Returns** [`SearchReplaceResponse`](#searchreplaceresponse)
 
 ### `updateMavenProject` *(long)*
 
@@ -939,13 +939,13 @@ Runs the equivalent of the IDE's 'Maven > Update Project' action: re-reads the p
 
 Gets the Eclipse target platform the workspace is building against: its name, memento, whether it still exists, whether it is resolved and how many bundles it resolved to. status is RUNNING_PLATFORM when no .target file is set - an ordinary state, not a failure - and bundleCount is null unless the target is resolved.
 
-**Returns** [`ActiveTargetResponse`](#shape-ActiveTargetResponse)
+**Returns** [`ActiveTargetResponse`](#activetargetresponse)
 
 ### `reloadTarget` *(long)*
 
 Reloads the currently active Eclipse target platform and describes the result. Useful after target contents change on disk. With no .target file set there is nothing to reload: that is reported as status RUNNING_PLATFORM, not as an error.
 
-**Returns** [`ActiveTargetResponse`](#shape-ActiveTargetResponse)
+**Returns** [`ActiveTargetResponse`](#activetargetresponse)
 
 ### `reloadWorkspaceBundle`
 
@@ -983,7 +983,7 @@ Starts a JUnit Plug-in Test run asynchronously using the PDE launcher and return
 | `additionalBundles` |  | Comma-separated additional bundle/plug-in symbolic names to include (only used when includeAllPlugins is false). |
 | `launcherName` |  | Optional name of a saved launch configuration to use as the base (use (eclipse-runner MCP server).listLaunchConfigurations with typeFilter='junit-plugin' to find it). When set, all settings from that config are reused (VM args, program args, bundle selection, etc.) and only the test target is overridden. includeAllPlugins and additionalBundles are ignored when set. |
 
-**Returns** [`TestRunResponse`](#shape-TestRunResponse)
+**Returns** [`TestRunResponse`](#testrunresponse)
 
 ### `setActiveTarget` *(long)*
 
@@ -993,7 +993,7 @@ Sets the active Eclipse target platform from a .target file, waits for it to loa
 |---|---|---|
 | `targetFilePath` | \* | The workspace-relative or absolute path to the .target file (e.g., '/MyProject/myplatform.target') |
 
-**Returns** [`ActiveTargetResponse`](#shape-ActiveTargetResponse)
+**Returns** [`ActiveTargetResponse`](#activetargetresponse)
 
 ## eclipse-runner
 
@@ -1009,7 +1009,7 @@ Launches a Java application in debug mode. The application will stop at breakpoi
 | `vmArgs` |  | Optional JVM arguments (e.g., '-Xmx512m -Dfoo=bar') |
 | `timeout` |  | Timeout in seconds to wait for completion. Use '0' to launch in background without waiting. Default: '0' |
 
-**Returns** [`LaunchResponse`](#shape-LaunchResponse)
+**Returns** [`LaunchResponse`](#launchresponse)
 
 ### `evaluateExpression`
 
@@ -1021,7 +1021,7 @@ Evaluates a Java expression in a suspended debug frame. The application must be 
 | `expression` | \* | The Java expression to evaluate (e.g., 'myList.size()', 'x + y', 'this.toString()') |
 | `threadName` |  | Optional: the suspended thread whose top frame to evaluate in. Omit to take the first suspended thread |
 
-**Returns** [`EvaluationResponse`](#shape-EvaluationResponse)
+**Returns** [`EvaluationResponse`](#evaluationresponse)
 
 ### `getStackTrace`
 
@@ -1031,7 +1031,7 @@ Gets the stack trace of every thread of a debug session, plus the local variable
 |---|---|---|
 | `nameOrClass` | \* | A substring to match against the debug session name or main class |
 
-**Returns** [`StackTraceResponse`](#shape-StackTraceResponse)
+**Returns** [`StackTraceResponse`](#stacktraceresponse)
 
 ### `hotCodeReplace` *(long)*
 
@@ -1041,7 +1041,7 @@ Rebuilds the debugged project and reports whether the new bytecode actually reac
 |---|---|---|
 | `nameOrClass` | \* | A substring to match against the debug session name or main class |
 
-**Returns** [`HotCodeReplaceResponse`](#shape-HotCodeReplaceResponse)
+**Returns** [`HotCodeReplaceResponse`](#hotcodereplaceresponse)
 
 ### `launchConfiguration` *(long)*
 
@@ -1053,19 +1053,19 @@ Launches an existing saved launch configuration by name, exactly as it would run
 | `mode` |  | Launch mode: 'run' or 'debug'. Default: 'run' |
 | `timeout` |  | Timeout in seconds to wait for completion. Use '0' to launch in background without waiting. Default: '0' |
 
-**Returns** [`LaunchResponse`](#shape-LaunchResponse)
+**Returns** [`LaunchResponse`](#launchresponse)
 
 ### `listActiveLaunches`
 
 Lists the applications Eclipse is currently running or debugging. Each launch reports name, mode (run/debug), mainType, projectName, a terminated flag, and its processes with the operating system pid where the debug plug-in recorded one. Nothing running is an empty launches list with totalLaunches = 0, not a message.
 
-**Returns** [`ActiveLaunchesResponse`](#shape-ActiveLaunchesResponse)
+**Returns** [`ActiveLaunchesResponse`](#activelaunchesresponse)
 
 ### `listBreakpoints`
 
 Lists all breakpoints currently set in the workspace. Each breakpoint reports projectName and a project-relative filePath, which the reading and editing tools take directly, plus typeName, a 1-based lineNumber, enabled, condition and hitCount. No breakpoints is an empty breakpoints list with totalBreakpoints = 0, not a message.
 
-**Returns** [`BreakpointsResponse`](#shape-BreakpointsResponse)
+**Returns** [`BreakpointsResponse`](#breakpointsresponse)
 
 ### `listLaunchConfigurations`
 
@@ -1075,7 +1075,7 @@ Lists all saved launch configurations in the workspace (name, type, and for Java
 |---|---|---|
 | `typeFilter` |  | Optional filter: 'junit' (org.eclipse.jdt.junit.launchconfig), 'junit-plugin' (org.eclipse.pde.ui.JunitLaunchConfig), 'all' or omit for everything, or any substring of the type ID. |
 
-**Returns** [`LaunchConfigurationsResponse`](#shape-LaunchConfigurationsResponse)
+**Returns** [`LaunchConfigurationsResponse`](#launchconfigurationsresponse)
 
 ### `removeAllBreakpoints`
 
@@ -1093,7 +1093,7 @@ Resumes a suspended debug session and waits for it to stop at the next breakpoin
 | `threadName` |  | Optional: the thread to resume. Omit to resume the whole session |
 | `timeout` |  | Seconds to wait for the next suspend. Use '0' to resume without waiting. Default: '10' |
 
-**Returns** [`StepResponse`](#shape-StepResponse)
+**Returns** [`StepResponse`](#stepresponse)
 
 ### `runJavaApplication` *(long)*
 
@@ -1107,7 +1107,7 @@ Launches a Java application in run mode. Specify the project and fully qualified
 | `vmArgs` |  | Optional JVM arguments (e.g., '-Xmx512m -Dfoo=bar') |
 | `timeout` |  | Timeout in seconds to wait for completion. Use '0' to launch in background without waiting. Default: '30' |
 
-**Returns** [`LaunchResponse`](#shape-LaunchResponse)
+**Returns** [`LaunchResponse`](#launchresponse)
 
 ### `setConditionalBreakpoint`
 
@@ -1121,7 +1121,7 @@ Sets a breakpoint that only triggers when a condition evaluates to true, replaci
 | `condition` | \* | A Java boolean expression (e.g., 'i > 100', 'name.equals("test")') |
 | `hitCount` |  | Optional: breakpoint triggers only after being hit N times. Default: '0' (disabled) |
 
-**Returns** [`BreakpointResponse`](#shape-BreakpointResponse)
+**Returns** [`BreakpointResponse`](#breakpointresponse)
 
 ### `stepInto` *(long)*
 
@@ -1133,7 +1133,7 @@ Steps into the method call at the current line in a suspended debug session. Ret
 | `threadName` |  | Optional: the thread to step. Omit to take the first suspended thread |
 | `timeout` |  | Seconds to wait for the step to complete. Use '0' not to wait. Default: '10' |
 
-**Returns** [`StepResponse`](#shape-StepResponse)
+**Returns** [`StepResponse`](#stepresponse)
 
 ### `stepOver` *(long)*
 
@@ -1145,7 +1145,7 @@ Steps over the current line in a suspended debug session, executing it without e
 | `threadName` |  | Optional: the thread to step. Omit to take the first suspended thread |
 | `timeout` |  | Seconds to wait for the step to complete. Use '0' not to wait. Default: '10' |
 
-**Returns** [`StepResponse`](#shape-StepResponse)
+**Returns** [`StepResponse`](#stepresponse)
 
 ### `stepReturn` *(long)*
 
@@ -1157,7 +1157,7 @@ Runs until the current method returns to its caller, in a suspended debug sessio
 | `threadName` |  | Optional: the thread to step. Omit to take the first suspended thread |
 | `timeout` |  | Seconds to wait for the step to complete. Use '0' not to wait. Default: '10' |
 
-**Returns** [`StepResponse`](#shape-StepResponse)
+**Returns** [`StepResponse`](#stepresponse)
 
 ### `stopApplication`
 
@@ -1167,7 +1167,7 @@ Stops the running or debugging Java applications matching the launch configurati
 |---|---|---|
 | `nameOrClass` | \* | A substring to match against the application name or main class (e.g., 'Main' or 'com.example') |
 
-**Returns** [`StopApplicationResponse`](#shape-StopApplicationResponse)
+**Returns** [`StopApplicationResponse`](#stopapplicationresponse)
 
 ### `toggleBreakpoint`
 
@@ -1179,7 +1179,7 @@ Sets a line breakpoint at the given location, or removes the one already there. 
 | `typeName` | \* | The fully qualified type name (e.g., 'com.example.Main') |
 | `lineNumber` | \* | The 1-based line number where the breakpoint should be set |
 
-**Returns** [`BreakpointResponse`](#shape-BreakpointResponse)
+**Returns** [`BreakpointResponse`](#breakpointresponse)
 
 ## memory
 
@@ -1233,49 +1233,45 @@ Reads the content of the given web page and returns it as markdown, together wit
 |---|---|---|
 | `url` | \* | A web site URL |
 
-**Returns** [`WebPageResponse`](#shape-WebPageResponse)
+**Returns** [`WebPageResponse`](#webpageresponse)
 
 ## Result shapes
 
-<a id="shape-WebSearchResponse"></a>
 ### `WebSearchResponse`
 
 | Field | Type |
 |---|---|
 | `query` | `String` |
 | `totalResults` | `int` |
-| `results` | [`WebSearchResponse.Result`](#shape-WebSearchResponse-Result)[] |
+| `results` | [`WebSearchResponseResult`](#websearchresponseresult)[] |
 | `summaryText` | `String` |
 
-<a id="shape-EditResult"></a>
 ### `EditResult`
 
 | Field | Type |
 |---|---|
-| `status` | [`EditResult.EditStatus`](#shape-EditResult-EditStatus) |
+| `status` | [`EditResultEditStatus`](#editresulteditstatus) |
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `versionBefore` | [`ResourceVersion`](#shape-ResourceVersion) |
-| `versionAfter` | [`ResourceVersion`](#shape-ResourceVersion) |
-| `edits` | [`EditResult.AppliedEdit`](#shape-EditResult-AppliedEdit)[] |
+| `versionBefore` | [`ResourceVersion`](#resourceversion) |
+| `versionAfter` | [`ResourceVersion`](#resourceversion) |
+| `edits` | [`EditResultAppliedEdit`](#editresultappliededit)[] |
 | `unifiedDiff` | `String` |
-| `affectedResources` | [`EditResult.AffectedResource`](#shape-EditResult-AffectedResource)[] |
-| `editorReveal` | [`EditResult.EditorReveal`](#shape-EditResult-EditorReveal) |
+| `affectedResources` | [`EditResultAffectedResource`](#editresultaffectedresource)[] |
+| `editorReveal` | [`EditResultEditorReveal`](#editresulteditorreveal) |
 | `undoHistoryTimestamp` | `long` |
-| `workspaceState` | [`EditResult.WorkspaceSync`](#shape-EditResult-WorkspaceSync) |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `workspaceState` | [`EditResultWorkspaceSync`](#editresultworkspacesync) |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-LineDelimiterPreference"></a>
 ### `LineDelimiterPreference`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `delimiter` | `String` |
-| `name` | [`LineDelimiterPreference.DelimiterName`](#shape-LineDelimiterPreference-DelimiterName) |
-| `source` | [`LineDelimiterPreference.Source`](#shape-LineDelimiterPreference-Source) |
+| `name` | [`LineDelimiterPreferenceDelimiterName`](#linedelimiterpreferencedelimitername) |
+| `source` | [`LineDelimiterPreferenceSource`](#linedelimiterpreferencesource) |
 
-<a id="shape-DiffResponse"></a>
 ### `DiffResponse`
 
 | Field | Type |
@@ -1284,15 +1280,14 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `fromLabel` | `String` |
 | `toLabel` | `String` |
-| `fromVersion` | [`ResourceVersion`](#shape-ResourceVersion) |
-| `toVersion` | [`ResourceVersion`](#shape-ResourceVersion) |
+| `fromVersion` | [`ResourceVersion`](#resourceversion) |
+| `toVersion` | [`ResourceVersion`](#resourceversion) |
 | `identical` | `boolean` |
 | `addedLines` | `int` |
 | `removedLines` | `int` |
 | `unifiedDiff` | `String` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-CacheStatsResponse"></a>
 ### `CacheStatsResponse`
 
 | Field | Type |
@@ -1303,27 +1298,25 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `maxTotalTokens` | `int` |
 | `summaryText` | `String` |
 
-<a id="shape-ResourceReadResult"></a>
 ### `ResourceReadResult`
 
 | Field | Type |
 |---|---|
-| `status` | [`ResourceReadResult.ReadStatus`](#shape-ResourceReadResult-ReadStatus) |
+| `status` | [`ResourceReadResultReadStatus`](#resourcereadresultreadstatus) |
 | `uri` | `String` |
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `language` | `String` |
-| `version` | [`ResourceVersion`](#shape-ResourceVersion) |
-| `returnedRange` | [`ContentRange`](#shape-ContentRange) |
+| `version` | [`ResourceVersion`](#resourceversion) |
+| `returnedRange` | [`ContentRange`](#contentrange) |
 | `totalLines` | `int` |
 | `content` | `String` |
-| `origin` | [`SourceOrigin`](#shape-SourceOrigin) |
+| `origin` | [`SourceOrigin`](#sourceorigin) |
 | `readOnly` | `boolean` |
 | `truncated` | `boolean` |
-| `omittedRanges` | [`ContentRange`](#shape-ContentRange)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `omittedRanges` | [`ContentRange`](#contentrange)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-FileHistoryResponse"></a>
 ### `FileHistoryResponse`
 
 | Field | Type |
@@ -1331,72 +1324,66 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `totalVersions` | `int` |
-| `versions` | [`FileHistoryResponse.HistoryEntry`](#shape-FileHistoryResponse-HistoryEntry)[] |
+| `versions` | [`FileHistoryResponseHistoryEntry`](#filehistoryresponsehistoryentry)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-CachedResourcesResponse"></a>
 ### `CachedResourcesResponse`
 
 | Field | Type |
 |---|---|
 | `totalResources` | `int` |
 | `totalEstimatedTokens` | `int` |
-| `resources` | [`CachedResourcesResponse.CachedEntry`](#shape-CachedResourcesResponse-CachedEntry)[] |
+| `resources` | [`CachedResourcesResponseCachedEntry`](#cachedresourcesresponsecachedentry)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitStageResponse"></a>
 ### `GitStageResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
-| `operation` | [`GitStageResponse.StageOperation`](#shape-GitStageResponse-StageOperation) |
+| `operation` | [`GitStageResponseStageOperation`](#gitstageresponsestageoperation) |
 | `pathspec` | `String` |
 | `totalFiles` | `int` |
-| `files` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
+| `files` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitBranchResponse"></a>
 ### `GitBranchResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `currentBranch` | `String` |
-| `branches` | [`GitBranchResponse.GitBranch`](#shape-GitBranchResponse-GitBranch)[] |
-| `remoteBranches` | [`GitBranchResponse.GitBranch`](#shape-GitBranchResponse-GitBranch)[] |
+| `branches` | [`GitBranchResponseGitBranch`](#gitbranchresponsegitbranch)[] |
+| `remoteBranches` | [`GitBranchResponseGitBranch`](#gitbranchresponsegitbranch)[] |
 | `totalBranches` | `int` |
 | `summaryText` | `String` |
 
-<a id="shape-GitCheckoutResponse"></a>
 ### `GitCheckoutResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
-| `status` | [`GitCheckoutResponse.CheckoutStatus`](#shape-GitCheckoutResponse-CheckoutStatus) |
+| `status` | [`GitCheckoutResponseCheckoutStatus`](#gitcheckoutresponsecheckoutstatus) |
 | `requestedBranch` | `String` |
 | `previousBranch` | `String` |
 | `currentBranch` | `String` |
 | `headSha` | `String` |
-| `blockingFiles` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
+| `blockingFiles` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
 | `refreshedProjects` | `String`[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitCommitResponse"></a>
 ### `GitCommitResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `branch` | `String` |
-| `commit` | [`GitLogResponse.GitCommit`](#shape-GitLogResponse-GitCommit) |
+| `commit` | [`GitLogResponseGitCommit`](#gitlogresponsegitcommit) |
 | `summaryText` | `String` |
 
-<a id="shape-GitDeleteBranchResponse"></a>
 ### `GitDeleteBranchResponse`
 
 | Field | Type |
@@ -1406,10 +1393,9 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `forced` | `boolean` |
 | `deleted` | `boolean` |
 | `deletedRefs` | `String`[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitDiffResponse"></a>
 ### `GitDiffResponse`
 
 | Field | Type |
@@ -1423,11 +1409,10 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `totalFiles` | `int` |
 | `addedLines` | `int` |
 | `removedLines` | `int` |
-| `files` | [`GitDiffResponse.GitFileDiff`](#shape-GitDiffResponse-GitFileDiff)[] |
+| `files` | [`GitDiffResponseGitFileDiff`](#gitdiffresponsegitfilediff)[] |
 | `unifiedDiff` | `String` |
 | `summaryText` | `String` |
 
-<a id="shape-GitLogResponse"></a>
 ### `GitLogResponse`
 
 | Field | Type |
@@ -1435,61 +1420,56 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `projectName` | `String` |
 | `branch` | `String` |
 | `commitCount` | `int` |
-| `commits` | [`GitLogResponse.GitCommit`](#shape-GitLogResponse-GitCommit)[] |
+| `commits` | [`GitLogResponseGitCommit`](#gitlogresponsegitcommit)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-GitStagePatchResponse"></a>
 ### `GitStagePatchResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
-| `status` | [`GitStagePatchResponse.PatchStatus`](#shape-GitStagePatchResponse-PatchStatus) |
+| `status` | [`GitStagePatchResponsePatchStatus`](#gitstagepatchresponsepatchstatus) |
 | `totalFiles` | `int` |
-| `files` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
+| `files` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
 | `workingTreePreserved` | `boolean` |
 | `restoredPaths` | `String`[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitStashResponse"></a>
 ### `GitStashResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `stashed` | `boolean` |
-| `stash` | [`GitStashListResponse.GitStash`](#shape-GitStashListResponse-GitStash) |
+| `stash` | [`GitStashListResponseGitStash`](#gitstashlistresponsegitstash) |
 | `totalStashes` | `int` |
 | `summaryText` | `String` |
 
-<a id="shape-GitStashListResponse"></a>
 ### `GitStashListResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `totalStashes` | `int` |
-| `stashes` | [`GitStashListResponse.GitStash`](#shape-GitStashListResponse-GitStash)[] |
+| `stashes` | [`GitStashListResponseGitStash`](#gitstashlistresponsegitstash)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitStashPopResponse"></a>
 ### `GitStashPopResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
-| `status` | [`GitStashPopResponse.PopStatus`](#shape-GitStashPopResponse-PopStatus) |
+| `status` | [`GitStashPopResponsePopStatus`](#gitstashpopresponsepopstatus) |
 | `dropped` | `boolean` |
 | `stashRef` | `String` |
 | `stashSha` | `String` |
 | `stashMessage` | `String` |
-| `conflicting` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `conflicting` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-GitStatusResponse"></a>
 ### `GitStatusResponse`
 
 | Field | Type |
@@ -1499,50 +1479,47 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `upstreamBranch` | `String` |
 | `aheadCount` | `Integer` |
 | `behindCount` | `Integer` |
-| `staged` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
-| `unstaged` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
-| `untracked` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
-| `conflicting` | [`GitStatusResponse.GitFileChange`](#shape-GitStatusResponse-GitFileChange)[] |
+| `staged` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
+| `unstaged` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
+| `untracked` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
+| `conflicting` | [`GitStatusResponseGitFileChange`](#gitstatusresponsegitfilechange)[] |
 | `totalChanges` | `int` |
 | `clean` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-QuickFixResponse"></a>
 ### `QuickFixResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`QuickFixResponse.Status`](#shape-QuickFixResponse-Status) |
+| `status` | [`QuickFixResponseStatus`](#quickfixresponsestatus) |
 | `markerId` | `long` |
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `requestedIndex` | `int` |
 | `appliedLabel` | `String` |
 | `markerResolved` | `Boolean` |
-| `availableProposals` | [`CompilationProblemsResponse.QuickFixOption`](#shape-CompilationProblemsResponse-QuickFixOption)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `availableProposals` | [`CompilationProblemsResponseQuickFixOption`](#compilationproblemsresponsequickfixoption)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-TypeResolutionResponse"></a>
 ### `TypeResolutionResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`TypeResolutionResponse.Status`](#shape-TypeResolutionResponse-Status) |
+| `status` | [`TypeResolutionResponseStatus`](#typeresolutionresponsestatus) |
 | `requestedTypeName` | `String` |
 | `resolvedTypeName` | `String` |
 | `searchedProjectName` | `String` |
-| `sourceOrigin` | [`SourceOrigin`](#shape-SourceOrigin) |
+| `sourceOrigin` | [`SourceOrigin`](#sourceorigin) |
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `rootKind` | [`TypeResolutionResponse.RootKind`](#shape-TypeResolutionResponse-RootKind) |
+| `rootKind` | [`TypeResolutionResponseRootKind`](#typeresolutionresponserootkind) |
 | `packageFragmentRoot` | `String` |
 | `sourceAttachmentPath` | `String` |
-| `classpathEntryKind` | [`TypeResolutionResponse.ClasspathEntryKind`](#shape-TypeResolutionResponse-ClasspathEntryKind) |
+| `classpathEntryKind` | [`TypeResolutionResponseClasspathEntryKind`](#typeresolutionresponseclasspathentrykind) |
 | `classpathEntryPath` | `String` |
 | `classFilePath` | `String` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-SearchResponse"></a>
 ### `SearchResponse`
 
 | Field | Type |
@@ -1550,22 +1527,20 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `query` | `String` |
 | `totalMatches` | `int` |
 | `filesMatched` | `int` |
-| `matches` | [`SearchResponse.SearchMatch`](#shape-SearchResponse-SearchMatch)[] |
+| `matches` | [`SearchResponseSearchMatch`](#searchresponsesearchmatch)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-FileListResponse"></a>
 ### `FileListResponse`
 
 | Field | Type |
 |---|---|
 | `patterns` | `String`[] |
 | `totalFiles` | `int` |
-| `files` | [`FileListResponse.WorkspaceFile`](#shape-FileListResponse-WorkspaceFile)[] |
+| `files` | [`FileListResponseWorkspaceFile`](#filelistresponseworkspacefile)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-ReferencesResponse"></a>
 ### `ReferencesResponse`
 
 | Field | Type |
@@ -1573,38 +1548,35 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `target` | `String` |
 | `totalReferences` | `int` |
 | `filesAffected` | `int` |
-| `references` | [`ReferencesResponse.Reference`](#shape-ReferencesResponse-Reference)[] |
+| `references` | [`ReferencesResponseReference`](#referencesresponsereference)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-TestClassesResponse"></a>
 ### `TestClassesResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `totalClasses` | `int` |
-| `plainTests` | [`TestClassesResponse.TestClass`](#shape-TestClassesResponse-TestClass)[] |
-| `pdeTests` | [`TestClassesResponse.TestClass`](#shape-TestClassesResponse-TestClass)[] |
+| `plainTests` | [`TestClassesResponseTestClass`](#testclassesresponsetestclass)[] |
+| `pdeTests` | [`TestClassesResponseTestClass`](#testclassesresponsetestclass)[] |
 | `namingWarnings` | `String`[] |
 | `summaryText` | `String` |
 
-<a id="shape-ClassOutlineResponse"></a>
 ### `ClassOutlineResponse`
 
 | Field | Type |
 |---|---|
 | `typeName` | `String` |
-| `status` | [`ClassOutlineResponse.Status`](#shape-ClassOutlineResponse-Status) |
+| `status` | [`ClassOutlineResponseStatus`](#classoutlineresponsestatus) |
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `declaration` | [`ClassOutlineResponse.Member`](#shape-ClassOutlineResponse-Member) |
-| `fields` | [`ClassOutlineResponse.Member`](#shape-ClassOutlineResponse-Member)[] |
-| `methods` | [`ClassOutlineResponse.Member`](#shape-ClassOutlineResponse-Member)[] |
-| `innerTypes` | [`ClassOutlineResponse.Member`](#shape-ClassOutlineResponse-Member)[] |
+| `declaration` | [`ClassOutlineResponseMember`](#classoutlineresponsemember) |
+| `fields` | [`ClassOutlineResponseMember`](#classoutlineresponsemember)[] |
+| `methods` | [`ClassOutlineResponseMember`](#classoutlineresponsemember)[] |
+| `innerTypes` | [`ClassOutlineResponseMember`](#classoutlineresponsemember)[] |
 | `summaryText` | `String` |
 
-<a id="shape-CompilationProblemsResponse"></a>
 ### `CompilationProblemsResponse`
 
 | Field | Type |
@@ -1614,194 +1586,178 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `errorCount` | `int` |
 | `warningCount` | `int` |
 | `infoCount` | `int` |
-| `files` | [`CompilationProblemsResponse.FileProblems`](#shape-CompilationProblemsResponse-FileProblems)[] |
+| `files` | [`CompilationProblemsResponseFileProblems`](#compilationproblemsresponsefileproblems)[] |
 | `truncated` | `boolean` |
 | `summaryText` | `String` |
 
-<a id="shape-ConsoleOutputResponse"></a>
 ### `ConsoleOutputResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`ConsoleOutputResponse.Status`](#shape-ConsoleOutputResponse-Status) |
+| `status` | [`ConsoleOutputResponseStatus`](#consoleoutputresponsestatus) |
 | `totalConsoles` | `int` |
-| `consoles` | [`ConsoleOutputResponse.ConsoleOutput`](#shape-ConsoleOutputResponse-ConsoleOutput)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `consoles` | [`ConsoleOutputResponseConsoleOutput`](#consoleoutputresponseconsoleoutput)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-ImportSuggestionsResponse"></a>
 ### `ImportSuggestionsResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`ImportSuggestionsResponse.Status`](#shape-ImportSuggestionsResponse-Status) |
+| `status` | [`ImportSuggestionsResponseStatus`](#importsuggestionsresponsestatus) |
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `totalUnresolvedTypes` | `int` |
 | `totalCandidates` | `int` |
-| `unresolvedTypes` | [`ImportSuggestionsResponse.UnresolvedType`](#shape-ImportSuggestionsResponse-UnresolvedType)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `unresolvedTypes` | [`ImportSuggestionsResponseUnresolvedType`](#importsuggestionsresponseunresolvedtype)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-JavaDocResponse"></a>
 ### `JavaDocResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`JavaDocResponse.Status`](#shape-JavaDocResponse-Status) |
+| `status` | [`JavaDocResponseStatus`](#javadocresponsestatus) |
 | `typeName` | `String` |
 | `projectName` | `String` |
 | `markdown` | `String` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-MarkdownOutlineResponse"></a>
 ### `MarkdownOutlineResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`MarkdownOutlineResponse.Status`](#shape-MarkdownOutlineResponse-Status) |
+| `status` | [`MarkdownOutlineResponseStatus`](#markdownoutlineresponsestatus) |
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `totalLines` | `int` |
-| `headings` | [`MarkdownOutlineResponse.Heading`](#shape-MarkdownOutlineResponse-Heading)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `headings` | [`MarkdownOutlineResponseHeading`](#markdownoutlineresponseheading)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-CallHierarchyResponse"></a>
 ### `CallHierarchyResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`CallHierarchyResponse.Status`](#shape-CallHierarchyResponse-Status) |
+| `status` | [`CallHierarchyResponseStatus`](#callhierarchyresponsestatus) |
 | `target` | `String` |
 | `methodName` | `String` |
 | `declaringType` | `String` |
 | `maxDepth` | `int` |
 | `totalCallers` | `int` |
 | `totalCallees` | `int` |
-| `callers` | [`CallHierarchyResponse.CallNode`](#shape-CallHierarchyResponse-CallNode)[] |
-| `callees` | [`CallHierarchyResponse.CallNode`](#shape-CallHierarchyResponse-CallNode)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `callers` | [`CallHierarchyResponseCallNode`](#callhierarchyresponsecallnode)[] |
+| `callees` | [`CallHierarchyResponseCallNode`](#callhierarchyresponsecallnode)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-MethodSourceResponse"></a>
 ### `MethodSourceResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`MethodSourceResponse.Status`](#shape-MethodSourceResponse-Status) |
+| `status` | [`MethodSourceResponseStatus`](#methodsourceresponsestatus) |
 | `className` | `String` |
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `version` | [`ResourceVersion`](#shape-ResourceVersion) |
-| `methods` | [`MethodSourceResponse.MethodSource`](#shape-MethodSourceResponse-MethodSource)[] |
+| `version` | [`ResourceVersion`](#resourceversion) |
+| `methods` | [`MethodSourceResponseMethodSource`](#methodsourceresponsemethodsource)[] |
 | `notFound` | `String`[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-MavenDependenciesResponse"></a>
 ### `MavenDependenciesResponse`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `totalDependencies` | `int` |
-| `dependencies` | [`MavenDependenciesResponse.MavenDependency`](#shape-MavenDependenciesResponse-MavenDependency)[] |
+| `dependencies` | [`MavenDependenciesResponseMavenDependency`](#mavendependenciesresponsemavendependency)[] |
 | `summaryText` | `String` |
 
-<a id="shape-ProjectLayoutResponse"></a>
 ### `ProjectLayoutResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`ProjectLayoutResponse.Status`](#shape-ProjectLayoutResponse-Status) |
+| `status` | [`ProjectLayoutResponseStatus`](#projectlayoutresponsestatus) |
 | `projectName` | `String` |
 | `scopePath` | `String` |
 | `maxDepth` | `Integer` |
-| `root` | [`ProjectLayoutResponse.Node`](#shape-ProjectLayoutResponse-Node) |
+| `root` | [`ProjectLayoutResponseNode`](#projectlayoutresponsenode) |
 | `listedFiles` | `int` |
 | `listedFolders` | `int` |
 | `excludedCount` | `int` |
 | `truncated` | `boolean` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-ProjectPropertiesResponse"></a>
 ### `ProjectPropertiesResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`ProjectPropertiesResponse.Status`](#shape-ProjectPropertiesResponse-Status) |
+| `status` | [`ProjectPropertiesResponseStatus`](#projectpropertiesresponsestatus) |
 | `projectName` | `String` |
 | `location` | `String` |
 | `natures` | `String`[] |
 | `buildFiles` | `String`[] |
-| `java` | [`ProjectPropertiesResponse.JavaProperties`](#shape-ProjectPropertiesResponse-JavaProperties) |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `java` | [`ProjectPropertiesResponseJavaProperties`](#projectpropertiesresponsejavaproperties) |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-TypeHierarchyResponse"></a>
 ### `TypeHierarchyResponse`
 
 | Field | Type |
 |---|---|
 | `typeName` | `String` |
-| `status` | [`TypeHierarchyResponse.Status`](#shape-TypeHierarchyResponse-Status) |
-| `superclasses` | [`TypeHierarchyResponse.HierarchyType`](#shape-TypeHierarchyResponse-HierarchyType)[] |
-| `interfaces` | [`TypeHierarchyResponse.HierarchyType`](#shape-TypeHierarchyResponse-HierarchyType)[] |
-| `subtypes` | [`TypeHierarchyResponse.HierarchyType`](#shape-TypeHierarchyResponse-HierarchyType)[] |
+| `status` | [`TypeHierarchyResponseStatus`](#typehierarchyresponsestatus) |
+| `superclasses` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
+| `interfaces` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
+| `subtypes` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
 | `summaryText` | `String` |
 
-<a id="shape-MavenProjectListResponse"></a>
 ### `MavenProjectListResponse`
 
 | Field | Type |
 |---|---|
 | `totalProjects` | `int` |
-| `projects` | [`MavenProjectListResponse.MavenProject`](#shape-MavenProjectListResponse-MavenProject)[] |
+| `projects` | [`MavenProjectListResponseMavenProject`](#mavenprojectlistresponsemavenproject)[] |
 | `summaryText` | `String` |
 
-<a id="shape-ProjectListResponse"></a>
 ### `ProjectListResponse`
 
 | Field | Type |
 |---|---|
 | `totalProjects` | `int` |
 | `openProjects` | `int` |
-| `projects` | [`ProjectListResponse.WorkspaceProject`](#shape-ProjectListResponse-WorkspaceProject)[] |
+| `projects` | [`ProjectListResponseWorkspaceProject`](#projectlistresponseworkspaceproject)[] |
 | `summaryText` | `String` |
 
-<a id="shape-OpenProjectResponse"></a>
 ### `OpenProjectResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`OpenProjectResponse.Status`](#shape-OpenProjectResponse-Status) |
+| `status` | [`OpenProjectResponseStatus`](#openprojectresponsestatus) |
 | `projectName` | `String` |
 | `directoryPath` | `String` |
 | `location` | `String` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-McpSchema-ImageContent"></a>
-### `McpSchema.ImageContent`
+### `McpSchemaImageContent`
 
 | Field | Type |
 |---|---|
-| `annotations` | [`McpSchema.Annotations`](#shape-McpSchema-Annotations) |
+| `annotations` | [`McpSchemaAnnotations`](#mcpschemaannotations) |
 | `data` | `String` |
 | `mimeType` | `String` |
 | `meta` | Map&lt;`String`, `Object`&gt; |
 
-<a id="shape-TestRunResponse"></a>
 ### `TestRunResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`TestRunResponse.RunStatus`](#shape-TestRunResponse-RunStatus) |
+| `status` | [`TestRunResponseRunStatus`](#testrunresponserunstatus) |
 | `projectName` | `String` |
 | `requestedClasses` | `String`[] |
-| `summary` | [`TestRunResponse.TestSummary`](#shape-TestRunResponse-TestSummary) |
-| `failedTests` | [`TestRunResponse.TestCaseResult`](#shape-TestRunResponse-TestCaseResult)[] |
-| `skippedTests` | [`TestRunResponse.SkippedTestResult`](#shape-TestRunResponse-SkippedTestResult)[] |
-| `coverage` | [`TestRunResponse.CoverageResult`](#shape-TestRunResponse-CoverageResult) |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `summary` | [`TestRunResponseTestSummary`](#testrunresponsetestsummary) |
+| `failedTests` | [`TestRunResponseTestCaseResult`](#testrunresponsetestcaseresult)[] |
+| `skippedTests` | [`TestRunResponseSkippedTestResult`](#testrunresponseskippedtestresult)[] |
+| `coverage` | [`TestRunResponseCoverageResult`](#testrunresponsecoverageresult) |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 | `durationMillis` | `long` |
 
-<a id="shape-SearchReplaceResponse"></a>
 ### `SearchReplaceResponse`
 
 | Field | Type |
@@ -1811,29 +1767,27 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filesChanged` | `int` |
 | `totalMatches` | `int` |
 | `totalReplacements` | `int` |
-| `files` | [`SearchReplaceResponse.FileReplacement`](#shape-SearchReplaceResponse-FileReplacement)[] |
+| `files` | [`SearchReplaceResponseFileReplacement`](#searchreplaceresponsefilereplacement)[] |
 | `summaryText` | `String` |
 
-<a id="shape-ActiveTargetResponse"></a>
 ### `ActiveTargetResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`ActiveTargetResponse.TargetStatus`](#shape-ActiveTargetResponse-TargetStatus) |
+| `status` | [`ActiveTargetResponseTargetStatus`](#activetargetresponsetargetstatus) |
 | `explicitTarget` | `boolean` |
 | `name` | `String` |
 | `memento` | `String` |
 | `exists` | `boolean` |
 | `resolved` | `boolean` |
 | `bundleCount` | `Integer` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
-<a id="shape-LaunchResponse"></a>
 ### `LaunchResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`LaunchResponse.Status`](#shape-LaunchResponse-Status) |
+| `status` | [`LaunchResponseStatus`](#launchresponsestatus) |
 | `launchName` | `String` |
 | `mode` | `String` |
 | `projectName` | `String` |
@@ -1842,30 +1796,28 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `exitCode` | `Integer` |
 | `timedOut` | `boolean` |
 | `durationMillis` | `long` |
-| `stdout` | [`LaunchResponse.ProcessOutput`](#shape-LaunchResponse-ProcessOutput) |
-| `stderr` | [`LaunchResponse.ProcessOutput`](#shape-LaunchResponse-ProcessOutput) |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `stdout` | [`LaunchResponseProcessOutput`](#launchresponseprocessoutput) |
+| `stderr` | [`LaunchResponseProcessOutput`](#launchresponseprocessoutput) |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-EvaluationResponse"></a>
 ### `EvaluationResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`EvaluationResponse.Status`](#shape-EvaluationResponse-Status) |
+| `status` | [`EvaluationResponseStatus`](#evaluationresponsestatus) |
 | `nameOrClass` | `String` |
 | `expression` | `String` |
 | `launchName` | `String` |
 | `threadName` | `String` |
-| `frame` | [`StackTraceResponse.Frame`](#shape-StackTraceResponse-Frame) |
+| `frame` | [`StackTraceResponseFrame`](#stacktraceresponseframe) |
 | `value` | `String` |
 | `declaredType` | `String` |
 | `nullResult` | `boolean` |
 | `errorMessages` | `String`[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-StackTraceResponse"></a>
 ### `StackTraceResponse`
 
 | Field | Type |
@@ -1876,93 +1828,85 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `mainType` | `String` |
 | `anyThreadSuspended` | `boolean` |
 | `totalThreads` | `int` |
-| `threads` | [`StackTraceResponse.ThreadTrace`](#shape-StackTraceResponse-ThreadTrace)[] |
+| `threads` | [`StackTraceResponseThreadTrace`](#stacktraceresponsethreadtrace)[] |
 | `summaryText` | `String` |
 
-<a id="shape-HotCodeReplaceResponse"></a>
 ### `HotCodeReplaceResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`HotCodeReplaceResponse.Status`](#shape-HotCodeReplaceResponse-Status) |
+| `status` | [`HotCodeReplaceResponseStatus`](#hotcodereplaceresponsestatus) |
 | `nameOrClass` | `String` |
 | `launchName` | `String` |
 | `projectName` | `String` |
 | `waitedMillis` | `long` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-ActiveLaunchesResponse"></a>
 ### `ActiveLaunchesResponse`
 
 | Field | Type |
 |---|---|
 | `totalLaunches` | `int` |
-| `launches` | [`ActiveLaunchesResponse.ActiveLaunch`](#shape-ActiveLaunchesResponse-ActiveLaunch)[] |
+| `launches` | [`ActiveLaunchesResponseActiveLaunch`](#activelaunchesresponseactivelaunch)[] |
 | `summaryText` | `String` |
 
-<a id="shape-BreakpointsResponse"></a>
 ### `BreakpointsResponse`
 
 | Field | Type |
 |---|---|
 | `totalBreakpoints` | `int` |
 | `enabledCount` | `int` |
-| `breakpoints` | [`BreakpointsResponse.BreakpointInfo`](#shape-BreakpointsResponse-BreakpointInfo)[] |
+| `breakpoints` | [`BreakpointsResponseBreakpointInfo`](#breakpointsresponsebreakpointinfo)[] |
 | `summaryText` | `String` |
 
-<a id="shape-LaunchConfigurationsResponse"></a>
 ### `LaunchConfigurationsResponse`
 
 | Field | Type |
 |---|---|
 | `typeFilter` | `String` |
 | `totalConfigurations` | `int` |
-| `configurations` | [`LaunchConfigurationsResponse.LaunchConfigurationInfo`](#shape-LaunchConfigurationsResponse-LaunchConfigurationInfo)[] |
+| `configurations` | [`LaunchConfigurationsResponseLaunchConfigurationInfo`](#launchconfigurationsresponselaunchconfigurationinfo)[] |
 | `summaryText` | `String` |
 
-<a id="shape-StepResponse"></a>
 ### `StepResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`StepResponse.Status`](#shape-StepResponse-Status) |
-| `kind` | [`StepResponse.Kind`](#shape-StepResponse-Kind) |
+| `status` | [`StepResponseStatus`](#stepresponsestatus) |
+| `kind` | [`StepResponseKind`](#stepresponsekind) |
 | `nameOrClass` | `String` |
 | `launchName` | `String` |
 | `threadName` | `String` |
-| `frame` | [`StackTraceResponse.Frame`](#shape-StackTraceResponse-Frame) |
+| `frame` | [`StackTraceResponseFrame`](#stacktraceresponseframe) |
 | `waitedMillis` | `long` |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-BreakpointResponse"></a>
 ### `BreakpointResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`BreakpointResponse.Status`](#shape-BreakpointResponse-Status) |
-| `action` | [`BreakpointResponse.Action`](#shape-BreakpointResponse-Action) |
+| `status` | [`BreakpointResponseStatus`](#breakpointresponsestatus) |
+| `action` | [`BreakpointResponseAction`](#breakpointresponseaction) |
 | `projectName` | `String` |
 | `typeName` | `String` |
 | `lineNumber` | `int` |
-| `breakpoint` | [`BreakpointsResponse.BreakpointInfo`](#shape-BreakpointsResponse-BreakpointInfo) |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `breakpoint` | [`BreakpointsResponseBreakpointInfo`](#breakpointsresponsebreakpointinfo) |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-StopApplicationResponse"></a>
 ### `StopApplicationResponse`
 
 | Field | Type |
 |---|---|
-| `status` | [`StopApplicationResponse.Status`](#shape-StopApplicationResponse-Status) |
+| `status` | [`StopApplicationResponseStatus`](#stopapplicationresponsestatus) |
 | `nameOrClass` | `String` |
 | `totalMatched` | `int` |
-| `terminated` | [`StopApplicationResponse.TerminatedLaunch`](#shape-StopApplicationResponse-TerminatedLaunch)[] |
-| `diagnostics` | [`Diagnostic`](#shape-Diagnostic)[] |
+| `terminated` | [`StopApplicationResponseTerminatedLaunch`](#stopapplicationresponseterminatedlaunch)[] |
+| `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 | `summaryText` | `String` |
 
-<a id="shape-WebPageResponse"></a>
 ### `WebPageResponse`
 
 | Field | Type |
@@ -1974,8 +1918,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `title` | `String` |
 | `content` | `String` |
 
-<a id="shape-WebSearchResponse-Result"></a>
-### `WebSearchResponse.Result`
+### `WebSearchResponseResult`
 
 | Field | Type |
 |---|---|
@@ -1983,12 +1926,10 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `url` | `String` |
 | `snippet` | `String` |
 
-<a id="shape-EditResult-EditStatus"></a>
-### `EditResult.EditStatus`
+### `EditResultEditStatus`
 
 `APPLIED` \| `APPLIED_WITH_WARNINGS` \| `REJECTED` \| `PREVIEW`
 
-<a id="shape-ResourceVersion"></a>
 ### `ResourceVersion`
 
 | Field | Type |
@@ -1998,37 +1939,33 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `historyTimestamp` | `Long` |
 | `inSyncWithFileSystem` | `boolean` |
 
-<a id="shape-EditResult-AppliedEdit"></a>
-### `EditResult.AppliedEdit`
+### `EditResultAppliedEdit`
 
 | Field | Type |
 |---|---|
-| `oldRange` | [`ContentRange`](#shape-ContentRange) |
-| `newRange` | [`ContentRange`](#shape-ContentRange) |
+| `oldRange` | [`ContentRange`](#contentrange) |
+| `newRange` | [`ContentRange`](#contentrange) |
 | `insertedCharacters` | `int` |
 | `deletedCharacters` | `int` |
 
-<a id="shape-EditResult-AffectedResource"></a>
-### `EditResult.AffectedResource`
+### `EditResultAffectedResource`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `kind` | [`EditResult.ChangeKind`](#shape-EditResult-ChangeKind) |
-| `version` | [`ResourceVersion`](#shape-ResourceVersion) |
+| `kind` | [`EditResultChangeKind`](#editresultchangekind) |
+| `version` | [`ResourceVersion`](#resourceversion) |
 
-<a id="shape-EditResult-EditorReveal"></a>
-### `EditResult.EditorReveal`
+### `EditResultEditorReveal`
 
 | Field | Type |
 |---|---|
 | `opened` | `boolean` |
-| `revealedRange` | [`ContentRange`](#shape-ContentRange) |
-| `caret` | [`EditResult.EditorPosition`](#shape-EditResult-EditorPosition) |
+| `revealedRange` | [`ContentRange`](#contentrange) |
+| `caret` | [`EditResultEditorPosition`](#editresulteditorposition) |
 
-<a id="shape-EditResult-WorkspaceSync"></a>
-### `EditResult.WorkspaceSync`
+### `EditResultWorkspaceSync`
 
 | Field | Type |
 |---|---|
@@ -2036,31 +1973,26 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `cacheUpdated` | `boolean` |
 | `jdtConsistent` | `String` |
 
-<a id="shape-Diagnostic"></a>
 ### `Diagnostic`
 
 | Field | Type |
 |---|---|
-| `code` | [`DiagnosticCode`](#shape-DiagnosticCode) |
+| `code` | [`DiagnosticCode`](#diagnosticcode) |
 | `message` | `String` |
 | `retryable` | `boolean` |
 
-<a id="shape-LineDelimiterPreference-DelimiterName"></a>
-### `LineDelimiterPreference.DelimiterName`
+### `LineDelimiterPreferenceDelimiterName`
 
 `LF` \| `CRLF` \| `CR` \| `OTHER`
 
-<a id="shape-LineDelimiterPreference-Source"></a>
-### `LineDelimiterPreference.Source`
+### `LineDelimiterPreferenceSource`
 
 `PROJECT` \| `WORKSPACE` \| `DEFAULT`
 
-<a id="shape-ResourceReadResult-ReadStatus"></a>
-### `ResourceReadResult.ReadStatus`
+### `ResourceReadResultReadStatus`
 
 `OK` \| `PARTIAL` \| `FAILED`
 
-<a id="shape-ContentRange"></a>
 ### `ContentRange`
 
 | Field | Type |
@@ -2070,13 +2002,11 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `endLine` | `int` |
 | `endColumn` | `int` |
 
-<a id="shape-SourceOrigin"></a>
 ### `SourceOrigin`
 
 `WORKSPACE_SOURCE` \| `ATTACHED_SOURCE` \| `DECOMPILED_CLASS` \| `LOCAL_HISTORY`
 
-<a id="shape-FileHistoryResponse-HistoryEntry"></a>
-### `FileHistoryResponse.HistoryEntry`
+### `FileHistoryResponseHistoryEntry`
 
 | Field | Type |
 |---|---|
@@ -2085,13 +2015,12 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `sizeBytes` | `long` |
 | `exists` | `boolean` |
 
-<a id="shape-CachedResourcesResponse-CachedEntry"></a>
-### `CachedResourcesResponse.CachedEntry`
+### `CachedResourcesResponseCachedEntry`
 
 | Field | Type |
 |---|---|
 | `uri` | `String` |
-| `type` | [`ResourceDescriptor.ResourceType`](#shape-ResourceDescriptor-ResourceType) |
+| `type` | [`ResourceDescriptorResourceType`](#resourcedescriptorresourcetype) |
 | `displayName` | `String` |
 | `projectName` | `String` |
 | `filePath` | `String` |
@@ -2101,23 +2030,20 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `estimatedTokens` | `int` |
 | `cacheRevision` | `int` |
 
-<a id="shape-GitStageResponse-StageOperation"></a>
-### `GitStageResponse.StageOperation`
+### `GitStageResponseStageOperation`
 
 `STAGE` \| `UNSTAGE`
 
-<a id="shape-GitStatusResponse-GitFileChange"></a>
-### `GitStatusResponse.GitFileChange`
+### `GitStatusResponseGitFileChange`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `filePath` | `String` |
 | `repoPath` | `String` |
-| `changeType` | [`GitStatusResponse.ChangeType`](#shape-GitStatusResponse-ChangeType) |
+| `changeType` | [`GitStatusResponseChangeType`](#gitstatusresponsechangetype) |
 
-<a id="shape-GitBranchResponse-GitBranch"></a>
-### `GitBranchResponse.GitBranch`
+### `GitBranchResponseGitBranch`
 
 | Field | Type |
 |---|---|
@@ -2126,13 +2052,11 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `sha` | `String` |
 | `current` | `boolean` |
 
-<a id="shape-GitCheckoutResponse-CheckoutStatus"></a>
-### `GitCheckoutResponse.CheckoutStatus`
+### `GitCheckoutResponseCheckoutStatus`
 
 `SWITCHED` \| `BLOCKED`
 
-<a id="shape-GitLogResponse-GitCommit"></a>
-### `GitLogResponse.GitCommit`
+### `GitLogResponseGitCommit`
 
 | Field | Type |
 |---|---|
@@ -2144,8 +2068,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `message` | `String` |
 | `shortMessage` | `String` |
 
-<a id="shape-GitDiffResponse-GitFileDiff"></a>
-### `GitDiffResponse.GitFileDiff`
+### `GitDiffResponseGitFileDiff`
 
 | Field | Type |
 |---|---|
@@ -2153,18 +2076,16 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `repoPath` | `String` |
 | `oldRepoPath` | `String` |
-| `changeType` | [`GitDiffResponse.FileChangeType`](#shape-GitDiffResponse-FileChangeType) |
+| `changeType` | [`GitDiffResponseFileChangeType`](#gitdiffresponsefilechangetype) |
 | `addedLines` | `int` |
 | `removedLines` | `int` |
 | `binary` | `boolean` |
 
-<a id="shape-GitStagePatchResponse-PatchStatus"></a>
-### `GitStagePatchResponse.PatchStatus`
+### `GitStagePatchResponsePatchStatus`
 
 `STAGED` \| `FAILED`
 
-<a id="shape-GitStashListResponse-GitStash"></a>
-### `GitStashListResponse.GitStash`
+### `GitStashListResponseGitStash`
 
 | Field | Type |
 |---|---|
@@ -2173,18 +2094,15 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `sha` | `String` |
 | `message` | `String` |
 
-<a id="shape-GitStashPopResponse-PopStatus"></a>
-### `GitStashPopResponse.PopStatus`
+### `GitStashPopResponsePopStatus`
 
 `APPLIED` \| `CONFLICTED` \| `NOTHING_TO_APPLY`
 
-<a id="shape-QuickFixResponse-Status"></a>
-### `QuickFixResponse.Status`
+### `QuickFixResponseStatus`
 
 `APPLIED` \| `MARKER_NOT_FOUND` \| `NO_PROPOSALS` \| `INVALID_PROPOSAL_INDEX` \| `APPLY_FAILED`
 
-<a id="shape-CompilationProblemsResponse-QuickFixOption"></a>
-### `CompilationProblemsResponse.QuickFixOption`
+### `CompilationProblemsResponseQuickFixOption`
 
 | Field | Type |
 |---|---|
@@ -2192,23 +2110,19 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `label` | `String` |
 | `description` | `String` |
 
-<a id="shape-TypeResolutionResponse-Status"></a>
-### `TypeResolutionResponse.Status`
+### `TypeResolutionResponseStatus`
 
 `OK` \| `TYPE_NOT_RESOLVED` \| `PROJECT_NOT_FOUND`
 
-<a id="shape-TypeResolutionResponse-RootKind"></a>
-### `TypeResolutionResponse.RootKind`
+### `TypeResolutionResponseRootKind`
 
 `WORKSPACE_FOLDER` \| `WORKSPACE_ARCHIVE` \| `EXTERNAL_FOLDER` \| `EXTERNAL_ARCHIVE`
 
-<a id="shape-TypeResolutionResponse-ClasspathEntryKind"></a>
-### `TypeResolutionResponse.ClasspathEntryKind`
+### `TypeResolutionResponseClasspathEntryKind`
 
 `SOURCE` \| `PROJECT` \| `LIBRARY` \| `VARIABLE` \| `CONTAINER` \| `UNKNOWN`
 
-<a id="shape-SearchResponse-SearchMatch"></a>
-### `SearchResponse.SearchMatch`
+### `SearchResponseSearchMatch`
 
 | Field | Type |
 |---|---|
@@ -2217,16 +2131,14 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `lineNumber` | `int` |
 | `lineContent` | `String` |
 
-<a id="shape-FileListResponse-WorkspaceFile"></a>
-### `FileListResponse.WorkspaceFile`
+### `FileListResponseWorkspaceFile`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `filePath` | `String` |
 
-<a id="shape-ReferencesResponse-Reference"></a>
-### `ReferencesResponse.Reference`
+### `ReferencesResponseReference`
 
 | Field | Type |
 |---|---|
@@ -2236,8 +2148,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `enclosingElement` | `String` |
 | `lineContent` | `String` |
 
-<a id="shape-TestClassesResponse-TestClass"></a>
-### `TestClassesResponse.TestClass`
+### `TestClassesResponseTestClass`
 
 | Field | Type |
 |---|---|
@@ -2245,13 +2156,11 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `likelyRequiresPdeHarness` | `boolean` |
 
-<a id="shape-ClassOutlineResponse-Status"></a>
-### `ClassOutlineResponse.Status`
+### `ClassOutlineResponseStatus`
 
 `OK` \| `TYPE_NOT_FOUND` \| `NO_SOURCE` \| `ACCESS_DENIED`
 
-<a id="shape-ClassOutlineResponse-Member"></a>
-### `ClassOutlineResponse.Member`
+### `ClassOutlineResponseMember`
 
 | Field | Type |
 |---|---|
@@ -2260,38 +2169,33 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `startLine` | `int` |
 | `endLine` | `int` |
 
-<a id="shape-CompilationProblemsResponse-FileProblems"></a>
-### `CompilationProblemsResponse.FileProblems`
+### `CompilationProblemsResponseFileProblems`
 
 | Field | Type |
 |---|---|
 | `projectName` | `String` |
 | `filePath` | `String` |
-| `problems` | [`CompilationProblemsResponse.Problem`](#shape-CompilationProblemsResponse-Problem)[] |
+| `problems` | [`CompilationProblemsResponseProblem`](#compilationproblemsresponseproblem)[] |
 
-<a id="shape-ConsoleOutputResponse-Status"></a>
-### `ConsoleOutputResponse.Status`
+### `ConsoleOutputResponseStatus`
 
 `OK` \| `FAILED`
 
-<a id="shape-ConsoleOutputResponse-ConsoleOutput"></a>
-### `ConsoleOutputResponse.ConsoleOutput`
+### `ConsoleOutputResponseConsoleOutput`
 
 | Field | Type |
 |---|---|
 | `consoleName` | `String` |
-| `returnedRange` | [`ContentRange`](#shape-ContentRange) |
+| `returnedRange` | [`ContentRange`](#contentrange) |
 | `totalLines` | `int` |
 | `truncated` | `boolean` |
 | `text` | `String` |
 
-<a id="shape-ImportSuggestionsResponse-Status"></a>
-### `ImportSuggestionsResponse.Status`
+### `ImportSuggestionsResponseStatus`
 
 `OK` \| `PROJECT_NOT_FOUND` \| `PROJECT_CLOSED` \| `FILE_NOT_FOUND` \| `FAILED`
 
-<a id="shape-ImportSuggestionsResponse-UnresolvedType"></a>
-### `ImportSuggestionsResponse.UnresolvedType`
+### `ImportSuggestionsResponseUnresolvedType`
 
 | Field | Type |
 |---|---|
@@ -2300,33 +2204,28 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `message` | `String` |
 | `candidates` | `String`[] |
 
-<a id="shape-JavaDocResponse-Status"></a>
-### `JavaDocResponse.Status`
+### `JavaDocResponseStatus`
 
 `OK` \| `NO_JAVADOC` \| `TYPE_NOT_FOUND`
 
-<a id="shape-MarkdownOutlineResponse-Status"></a>
-### `MarkdownOutlineResponse.Status`
+### `MarkdownOutlineResponseStatus`
 
 `OK` \| `FAILED`
 
-<a id="shape-MarkdownOutlineResponse-Heading"></a>
-### `MarkdownOutlineResponse.Heading`
+### `MarkdownOutlineResponseHeading`
 
 | Field | Type |
 |---|---|
 | `index` | `int` |
 | `level` | `int` |
 | `text` | `String` |
-| `range` | [`ContentRange`](#shape-ContentRange) |
+| `range` | [`ContentRange`](#contentrange) |
 
-<a id="shape-CallHierarchyResponse-Status"></a>
-### `CallHierarchyResponse.Status`
+### `CallHierarchyResponseStatus`
 
 `OK` \| `TYPE_NOT_FOUND` \| `METHOD_NOT_FOUND` \| `FAILED`
 
-<a id="shape-CallHierarchyResponse-CallNode"></a>
-### `CallHierarchyResponse.CallNode`
+### `CallHierarchyResponseCallNode`
 
 | Field | Type |
 |---|---|
@@ -2338,23 +2237,20 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `lineNumber` | `int` |
 
-<a id="shape-MethodSourceResponse-Status"></a>
-### `MethodSourceResponse.Status`
+### `MethodSourceResponseStatus`
 
 `OK` \| `PARTIAL` \| `FAILED`
 
-<a id="shape-MethodSourceResponse-MethodSource"></a>
-### `MethodSourceResponse.MethodSource`
+### `MethodSourceResponseMethodSource`
 
 | Field | Type |
 |---|---|
 | `methodName` | `String` |
 | `parameters` | `String` |
-| `range` | [`ContentRange`](#shape-ContentRange) |
+| `range` | [`ContentRange`](#contentrange) |
 | `source` | `String` |
 
-<a id="shape-MavenDependenciesResponse-MavenDependency"></a>
-### `MavenDependenciesResponse.MavenDependency`
+### `MavenDependenciesResponseMavenDependency`
 
 | Field | Type |
 |---|---|
@@ -2363,29 +2259,25 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `version` | `String` |
 | `scope` | `String` |
 
-<a id="shape-ProjectLayoutResponse-Status"></a>
-### `ProjectLayoutResponse.Status`
+### `ProjectLayoutResponseStatus`
 
 `OK` \| `FAILED`
 
-<a id="shape-ProjectLayoutResponse-Node"></a>
-### `ProjectLayoutResponse.Node`
+### `ProjectLayoutResponseNode`
 
 | Field | Type |
 |---|---|
 | `name` | `String` |
 | `filePath` | `String` |
-| `type` | [`ProjectLayoutResponse.NodeType`](#shape-ProjectLayoutResponse-NodeType) |
+| `type` | [`ProjectLayoutResponseNodeType`](#projectlayoutresponsenodetype) |
 | `childCount` | `int` |
-| `children` | [`ProjectLayoutResponse.Node`](#shape-ProjectLayoutResponse-Node)[] |
+| `children` | [`ProjectLayoutResponseNode`](#projectlayoutresponsenode)[] |
 
-<a id="shape-ProjectPropertiesResponse-Status"></a>
-### `ProjectPropertiesResponse.Status`
+### `ProjectPropertiesResponseStatus`
 
 `OK` \| `PROJECT_NOT_FOUND` \| `PROJECT_CLOSED` \| `FAILED`
 
-<a id="shape-ProjectPropertiesResponse-JavaProperties"></a>
-### `ProjectPropertiesResponse.JavaProperties`
+### `ProjectPropertiesResponseJavaProperties`
 
 | Field | Type |
 |---|---|
@@ -2397,13 +2289,11 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `referencedProjects` | `String`[] |
 | `referencedLibraries` | `String`[] |
 
-<a id="shape-TypeHierarchyResponse-Status"></a>
-### `TypeHierarchyResponse.Status`
+### `TypeHierarchyResponseStatus`
 
 `OK` \| `TYPE_NOT_FOUND`
 
-<a id="shape-TypeHierarchyResponse-HierarchyType"></a>
-### `TypeHierarchyResponse.HierarchyType`
+### `TypeHierarchyResponseHierarchyType`
 
 | Field | Type |
 |---|---|
@@ -2411,8 +2301,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `projectName` | `String` |
 | `filePath` | `String` |
 
-<a id="shape-MavenProjectListResponse-MavenProject"></a>
-### `MavenProjectListResponse.MavenProject`
+### `MavenProjectListResponseMavenProject`
 
 | Field | Type |
 |---|---|
@@ -2422,8 +2311,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `version` | `String` |
 | `packaging` | `String` |
 
-<a id="shape-ProjectListResponse-WorkspaceProject"></a>
-### `ProjectListResponse.WorkspaceProject`
+### `ProjectListResponseWorkspaceProject`
 
 | Field | Type |
 |---|---|
@@ -2432,27 +2320,23 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `natures` | `String`[] |
 | `location` | `String` |
 
-<a id="shape-OpenProjectResponse-Status"></a>
-### `OpenProjectResponse.Status`
+### `OpenProjectResponseStatus`
 
 `IMPORTED` \| `OPENED` \| `ALREADY_OPEN` \| `FAILED`
 
-<a id="shape-McpSchema-Annotations"></a>
-### `McpSchema.Annotations`
+### `McpSchemaAnnotations`
 
 | Field | Type |
 |---|---|
-| `audience` | [`McpSchema.Role`](#shape-McpSchema-Role)[] |
+| `audience` | [`McpSchemaRole`](#mcpschemarole)[] |
 | `priority` | `Double` |
 | `lastModified` | `String` |
 
-<a id="shape-TestRunResponse-RunStatus"></a>
-### `TestRunResponse.RunStatus`
+### `TestRunResponseRunStatus`
 
 `RUNNING` \| `COMPLETED` \| `COMPLETED_WITH_FAILURES` \| `FAILED_TO_START` \| `TIMED_OUT` \| `CANCELLED`
 
-<a id="shape-TestRunResponse-TestSummary"></a>
-### `TestRunResponse.TestSummary`
+### `TestRunResponseTestSummary`
 
 | Field | Type |
 |---|---|
@@ -2462,22 +2346,20 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `errors` | `int` |
 | `skipped` | `int` |
 
-<a id="shape-TestRunResponse-TestCaseResult"></a>
-### `TestRunResponse.TestCaseResult`
+### `TestRunResponseTestCaseResult`
 
 | Field | Type |
 |---|---|
 | `className` | `String` |
 | `methodName` | `String` |
-| `status` | [`TestRunResponse.TestStatus`](#shape-TestRunResponse-TestStatus) |
+| `status` | [`TestRunResponseTestStatus`](#testrunresponseteststatus) |
 | `message` | `String` |
 | `failureTrace` | `String` |
 | `traceTruncated` | `boolean` |
-| `source` | [`TestRunResponse.SourceLocation`](#shape-TestRunResponse-SourceLocation) |
+| `source` | [`TestRunResponseSourceLocation`](#testrunresponsesourcelocation) |
 | `durationSeconds` | `double` |
 
-<a id="shape-TestRunResponse-SkippedTestResult"></a>
-### `TestRunResponse.SkippedTestResult`
+### `TestRunResponseSkippedTestResult`
 
 | Field | Type |
 |---|---|
@@ -2485,8 +2367,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `methodName` | `String` |
 | `reason` | `String` |
 
-<a id="shape-TestRunResponse-CoverageResult"></a>
-### `TestRunResponse.CoverageResult`
+### `TestRunResponseCoverageResult`
 
 | Field | Type |
 |---|---|
@@ -2495,8 +2376,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `execFilePath` | `String` |
 | `report` | `String` |
 
-<a id="shape-SearchReplaceResponse-FileReplacement"></a>
-### `SearchReplaceResponse.FileReplacement`
+### `SearchReplaceResponseFileReplacement`
 
 | Field | Type |
 |---|---|
@@ -2505,18 +2385,15 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `matchesFound` | `int` |
 | `replacementsMade` | `int` |
 
-<a id="shape-ActiveTargetResponse-TargetStatus"></a>
-### `ActiveTargetResponse.TargetStatus`
+### `ActiveTargetResponseTargetStatus`
 
 `ACTIVE` \| `RUNNING_PLATFORM` \| `FAILED`
 
-<a id="shape-LaunchResponse-Status"></a>
-### `LaunchResponse.Status`
+### `LaunchResponseStatus`
 
 `RUNNING` \| `COMPLETED` \| `FAILED_TO_START`
 
-<a id="shape-LaunchResponse-ProcessOutput"></a>
-### `LaunchResponse.ProcessOutput`
+### `LaunchResponseProcessOutput`
 
 | Field | Type |
 |---|---|
@@ -2524,13 +2401,11 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `truncated` | `boolean` |
 | `totalChars` | `int` |
 
-<a id="shape-EvaluationResponse-Status"></a>
-### `EvaluationResponse.Status`
+### `EvaluationResponseStatus`
 
 `OK` \| `COMPILE_ERROR` \| `EVALUATION_FAILED` \| `TIMED_OUT` \| `NO_SUSPENDED_THREAD` \| `THREAD_NOT_FOUND` \| `SESSION_NOT_FOUND`
 
-<a id="shape-StackTraceResponse-Frame"></a>
-### `StackTraceResponse.Frame`
+### `StackTraceResponseFrame`
 
 | Field | Type |
 |---|---|
@@ -2542,25 +2417,22 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `lineNumber` | `int` |
 | `nativeMethod` | `boolean` |
 | `synthetic` | `boolean` |
-| `variables` | [`StackTraceResponse.Variable`](#shape-StackTraceResponse-Variable)[] |
+| `variables` | [`StackTraceResponseVariable`](#stacktraceresponsevariable)[] |
 
-<a id="shape-StackTraceResponse-ThreadTrace"></a>
-### `StackTraceResponse.ThreadTrace`
+### `StackTraceResponseThreadTrace`
 
 | Field | Type |
 |---|---|
 | `name` | `String` |
 | `suspended` | `boolean` |
 | `totalFrames` | `int` |
-| `frames` | [`StackTraceResponse.Frame`](#shape-StackTraceResponse-Frame)[] |
+| `frames` | [`StackTraceResponseFrame`](#stacktraceresponseframe)[] |
 
-<a id="shape-HotCodeReplaceResponse-Status"></a>
-### `HotCodeReplaceResponse.Status`
+### `HotCodeReplaceResponseStatus`
 
 `SUCCEEDED` \| `OBSOLETE_METHODS` \| `FAILED` \| `NOT_SUPPORTED` \| `IN_SYNC` \| `TIMED_OUT` \| `SESSION_NOT_FOUND` \| `NO_JAVA_TARGET`
 
-<a id="shape-ActiveLaunchesResponse-ActiveLaunch"></a>
-### `ActiveLaunchesResponse.ActiveLaunch`
+### `ActiveLaunchesResponseActiveLaunch`
 
 | Field | Type |
 |---|---|
@@ -2570,10 +2442,9 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `mainType` | `String` |
 | `projectName` | `String` |
 | `pid` | `Long` |
-| `processes` | [`ActiveLaunchesResponse.LaunchProcess`](#shape-ActiveLaunchesResponse-LaunchProcess)[] |
+| `processes` | [`ActiveLaunchesResponseLaunchProcess`](#activelaunchesresponselaunchprocess)[] |
 
-<a id="shape-BreakpointsResponse-BreakpointInfo"></a>
-### `BreakpointsResponse.BreakpointInfo`
+### `BreakpointsResponseBreakpointInfo`
 
 | Field | Type |
 |---|---|
@@ -2586,8 +2457,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `hitCount` | `int` |
 | `modelIdentifier` | `String` |
 
-<a id="shape-LaunchConfigurationsResponse-LaunchConfigurationInfo"></a>
-### `LaunchConfigurationsResponse.LaunchConfigurationInfo`
+### `LaunchConfigurationsResponseLaunchConfigurationInfo`
 
 | Field | Type |
 |---|---|
@@ -2597,33 +2467,27 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `projectName` | `String` |
 | `mainClass` | `String` |
 
-<a id="shape-StepResponse-Status"></a>
-### `StepResponse.Status`
+### `StepResponseStatus`
 
 `SUSPENDED` \| `RUNNING` \| `TERMINATED` \| `TIMED_OUT` \| `NO_SUSPENDED_THREAD` \| `THREAD_NOT_FOUND` \| `SESSION_NOT_FOUND` \| `FAILED`
 
-<a id="shape-StepResponse-Kind"></a>
-### `StepResponse.Kind`
+### `StepResponseKind`
 
 `STEP_OVER` \| `STEP_INTO` \| `STEP_RETURN` \| `RESUME`
 
-<a id="shape-BreakpointResponse-Status"></a>
-### `BreakpointResponse.Status`
+### `BreakpointResponseStatus`
 
 `OK` \| `PROJECT_NOT_FOUND` \| `TYPE_NOT_FOUND` \| `INVALID_LINE` \| `FAILED`
 
-<a id="shape-BreakpointResponse-Action"></a>
-### `BreakpointResponse.Action`
+### `BreakpointResponseAction`
 
 `SET` \| `REMOVED` \| `REPLACED` \| `NONE`
 
-<a id="shape-StopApplicationResponse-Status"></a>
-### `StopApplicationResponse.Status`
+### `StopApplicationResponseStatus`
 
 `OK` \| `NO_MATCH` \| `FAILED`
 
-<a id="shape-StopApplicationResponse-TerminatedLaunch"></a>
-### `StopApplicationResponse.TerminatedLaunch`
+### `StopApplicationResponseTerminatedLaunch`
 
 | Field | Type |
 |---|---|
@@ -2631,70 +2495,59 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `mainType` | `String` |
 | `mode` | `String` |
 
-<a id="shape-EditResult-ChangeKind"></a>
-### `EditResult.ChangeKind`
+### `EditResultChangeKind`
 
 `MODIFIED` \| `CREATED` \| `DELETED` \| `MOVED`
 
-<a id="shape-EditResult-EditorPosition"></a>
-### `EditResult.EditorPosition`
+### `EditResultEditorPosition`
 
 | Field | Type |
 |---|---|
 | `line` | `int` |
 | `column` | `int` |
 
-<a id="shape-DiagnosticCode"></a>
 ### `DiagnosticCode`
 
 `RESOURCE_NOT_FOUND` \| `RESOURCE_NOT_ACCESSIBLE` \| `RESOURCE_ALREADY_EXISTS` \| `READ_ONLY_RESOURCE` \| `INVALID_RANGE` \| `VERSION_CONFLICT` \| `RESOURCE_VERSION_EXPIRED` \| `RESOURCE_OUT_OF_SYNC` \| `HISTORY_UNAVAILABLE` \| `TEXT_NOT_FOUND` \| `AMBIGUOUS_MATCH` \| `OVERLAPPING_EDITS` \| `INVALID_JAVA_EDIT` \| `REFACTORING_PRECONDITION_FAILED` \| `EDITOR_REVEAL_FAILED` \| `FORMATTER_FAILED` \| `PATCH_APPLY_FAILED` \| `MERGE_CONFLICT` \| `CHECKOUT_CONFLICT` \| `BRANCH_NOT_MERGED` \| `PROJECT_NOT_FOUND` \| `TEST_CLASS_NOT_FOUND` \| `TEST_PACKAGE_NOT_FOUND` \| `PDE_LAUNCH_TYPE_MISSING` \| `LAUNCH_CONFIGURATION_NOT_FOUND` \| `WORKSPACE_LOCKED` \| `OPERATION_TIMED_OUT` \| `DEPENDENCY_RESOLUTION_FAILED` \| `TEST_RESULTS_NOT_REPORTED` \| `COVERAGE_UNAVAILABLE` \| `INTERNAL_ERROR`
 
-<a id="shape-ResourceDescriptor-ResourceType"></a>
-### `ResourceDescriptor.ResourceType`
+### `ResourceDescriptorResourceType`
 
 `WORKSPACE_FILE` \| `JAVA_TYPE` \| `PROJECT_LAYOUT` \| `CONSOLE_OUTPUT` \| `EXTERNAL_FILE` \| `QUERY_RESULT` \| `TRANSIENT`
 
-<a id="shape-GitStatusResponse-ChangeType"></a>
-### `GitStatusResponse.ChangeType`
+### `GitStatusResponseChangeType`
 
 `ADDED` \| `MODIFIED` \| `DELETED` \| `UNTRACKED` \| `CONFLICTING`
 
-<a id="shape-GitDiffResponse-FileChangeType"></a>
-### `GitDiffResponse.FileChangeType`
+### `GitDiffResponseFileChangeType`
 
 `ADDED` \| `MODIFIED` \| `DELETED` \| `RENAMED` \| `COPIED`
 
-<a id="shape-CompilationProblemsResponse-Problem"></a>
-### `CompilationProblemsResponse.Problem`
+### `CompilationProblemsResponseProblem`
 
 | Field | Type |
 |---|---|
-| `severity` | [`CompilationProblemsResponse.Severity`](#shape-CompilationProblemsResponse-Severity) |
+| `severity` | [`CompilationProblemsResponseSeverity`](#compilationproblemsresponseseverity) |
 | `lineNumber` | `int` |
 | `message` | `String` |
 | `markerId` | `long` |
 | `problemId` | `Integer` |
 | `contextSnippet` | `String` |
 | `contextLanguage` | `String` |
-| `quickFixes` | [`CompilationProblemsResponse.QuickFixOption`](#shape-CompilationProblemsResponse-QuickFixOption)[] |
+| `quickFixes` | [`CompilationProblemsResponseQuickFixOption`](#compilationproblemsresponsequickfixoption)[] |
 
-<a id="shape-ProjectLayoutResponse-NodeType"></a>
-### `ProjectLayoutResponse.NodeType`
+### `ProjectLayoutResponseNodeType`
 
 `PROJECT` \| `FOLDER` \| `FILE`
 
-<a id="shape-McpSchema-Role"></a>
-### `McpSchema.Role`
+### `McpSchemaRole`
 
 `USER` \| `ASSISTANT`
 
-<a id="shape-TestRunResponse-TestStatus"></a>
-### `TestRunResponse.TestStatus`
+### `TestRunResponseTestStatus`
 
 `PASSED` \| `FAILED` \| `ERROR` \| `SKIPPED` \| `UNKNOWN`
 
-<a id="shape-TestRunResponse-SourceLocation"></a>
-### `TestRunResponse.SourceLocation`
+### `TestRunResponseSourceLocation`
 
 | Field | Type |
 |---|---|
@@ -2702,8 +2555,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `line` | `Integer` |
 
-<a id="shape-StackTraceResponse-Variable"></a>
-### `StackTraceResponse.Variable`
+### `StackTraceResponseVariable`
 
 | Field | Type |
 |---|---|
@@ -2711,8 +2563,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `typeName` | `String` |
 | `value` | `String` |
 
-<a id="shape-ActiveLaunchesResponse-LaunchProcess"></a>
-### `ActiveLaunchesResponse.LaunchProcess`
+### `ActiveLaunchesResponseLaunchProcess`
 
 | Field | Type |
 |---|---|
@@ -2720,7 +2571,6 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `terminated` | `boolean` |
 | `pid` | `Long` |
 
-<a id="shape-CompilationProblemsResponse-Severity"></a>
-### `CompilationProblemsResponse.Severity`
+### `CompilationProblemsResponseSeverity`
 
 `ERROR` \| `WARNING` \| `INFO` \| `UNKNOWN`
