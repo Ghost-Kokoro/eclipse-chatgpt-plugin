@@ -28,7 +28,14 @@ AssistAI is an Eclipse IDE plugin that integrates LLM assistants (OpenAI, Anthro
 - `tests/com.github.gradusnikov.eclipse.plugin.assistai.main.tests/` — test project
 
 ## MCP Tools Available
-This project exposes Eclipse IDE capabilities as MCP tools. When working on code in Eclipse projects, prefer using these MCP tools over direct file edits:
+This project exposes Eclipse IDE capabilities as MCP tools. When working on code in Eclipse projects, prefer using these MCP tools over direct file edits.
+
+The full reference — every tool, its parameters and the shape of what it returns — is
+`plugins/com.github.gradusnikov.eclipse.plugin.assistai.main/docs/mcp-api.md`. It is
+generated from the annotations by `tools/generate-mcp-api.sh`; do not edit it by hand,
+and note that `McpApiDocPDETest` fails if it drifts from the code.
+
+The servers:
 
 - **eclipse-coder** — file editing, refactoring, patching, formatting
 - **eclipse-ide** — code analysis, navigation, testing, building, search

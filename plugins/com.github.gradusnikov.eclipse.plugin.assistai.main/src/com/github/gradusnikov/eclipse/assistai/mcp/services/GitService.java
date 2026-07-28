@@ -1,16 +1,22 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.ByteArrayInputStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 
 import java.nio.file.Path;
 
@@ -24,8 +30,12 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.e4.core.di.annotations.Creatable;
 import org.eclipse.egit.core.project.RepositoryMapping;
+import org.eclipse.jgit.api.ApplyResult;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ListBranchCommand;
+import org.eclipse.jgit.api.errors.CheckoutConflictException;
+import org.eclipse.jgit.api.errors.NotMergedException;
+import org.eclipse.jgit.api.errors.StashApplyFailureException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.diff.RawTextComparator;
@@ -36,7 +46,10 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.dircache.DirCacheEditor;
-import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.patch.FileHeader;
+import org.eclipse.jgit.patch.Patch;
+import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import org.eclipse.jgit.treewalk.FileTreeIterator;
 import org.eclipse.jgit.treewalk.filter.PathFilterGroup;
 import org.eclipse.jgit.lib.Repository;
@@ -46,6 +59,24 @@ import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.eclipse.ui.IEditorPart;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitBranchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitCheckoutResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitCommitResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDeleteBranchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDiffResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitLogResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStagePatchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStageResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStageResponse.StageOperation;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashListResponse.GitStash;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashPopResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStatusResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStatusResponse.ChangeType;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStatusResponse.GitFileChange;
 import com.github.gradusnikov.eclipse.assistai.tools.UISynchronizeCallable;
 
 import jakarta.inject.Inject;
@@ -85,97 +116,155 @@ public class GitService
         return mapping.getRepository();
     }
 
-    private void refreshProject(String projectName)
+    private boolean refreshProject(String projectName)
     {
         try
         {
             IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
             project.refreshLocal(IResource.DEPTH_INFINITE, null);
+            return true;
         }
         catch (CoreException e)
         {
             logger.error("Failed to refresh project: " + projectName, e);
+            return false;
         }
     }
 
-    public String getStatus(String projectName)
+    /**
+     * Refreshes every project mapped into the repository, and says which ones it
+     * managed.
+     * <p>
+     * An operation that rewrites the working tree - a checkout, a stash pop, the
+     * save-and-restore cycle of a patch stage - rewrites it for the whole repository,
+     * and one repository routinely holds several Eclipse projects. Refreshing only the
+     * project that happened to be named left every sibling stale, with nothing saying
+     * so.
+     */
+    private List<String> refreshMappedProjects(Repository repository)
+    {
+        List<String> refreshed = new ArrayList<>();
+        for (String projectName : mappedProjects(repository).values())
+        {
+            if (refreshProject(projectName))
+            {
+                refreshed.add(projectName);
+            }
+        }
+        refreshed.sort(Comparator.naturalOrder());
+        return refreshed;
+    }
+
+    /**
+     * The project's folder relative to the repository root, empty for a project sitting
+     * at that root.
+     */
+    private String projectPrefix(String projectName)
+    {
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
+        RepositoryMapping mapping = RepositoryMapping.getMapping(project);
+        String prefix = mapping == null ? "" : mapping.getRepoRelativePath(project);
+        return prefix == null ? "" : prefix;
+    }
+
+    /** The commit HEAD points at, or null in a repository with no commits. */
+    private String headSha(Repository repository)
+    {
+        try
+        {
+            ObjectId head = repository.resolve(Constants.HEAD);
+            return head == null ? null : head.getName();
+        }
+        catch (IOException e)
+        {
+            return null;
+        }
+    }
+
+    /** The checked-out branch, or null when it cannot be read. */
+    private String currentBranch(Repository repository)
+    {
+        try
+        {
+            return repository.getBranch();
+        }
+        catch (IOException e)
+        {
+            return null;
+        }
+    }
+
+    /**
+     * The projects mapped into a repository, keyed by their folder relative to the
+     * repository root - the empty string for a project sitting at that root.
+     * <p>
+     * Git reports every path from the repository root, but the reading and editing tools
+     * address a file by project and project-relative path, and one repository routinely
+     * holds several projects. Without this map a status entry names a file that no other
+     * tool can open.
+     */
+    private Map<String, String> mappedProjects(Repository repository)
+    {
+        Map<String, String> prefixes = new LinkedHashMap<>();
+        java.io.File repositoryDirectory = repository.getDirectory();
+
+        for (IProject project : ResourcesPlugin.getWorkspace().getRoot().getProjects())
+        {
+            if (!project.isAccessible())
+            {
+                continue;
+            }
+            RepositoryMapping mapping = RepositoryMapping.getMapping(project);
+            if (mapping == null || mapping.getRepository() == null
+                    || !Objects.equals(repositoryDirectory, mapping.getRepository().getDirectory()))
+            {
+                continue;
+            }
+            String prefix = mapping.getRepoRelativePath(project);
+            prefixes.putIfAbsent(prefix == null ? "" : prefix, project.getName());
+        }
+        return prefixes;
+    }
+
+    /**
+     * The working tree state: staged, unstaged, untracked and conflicting files, the
+     * current branch, and how far it has drifted from its upstream.
+     * <p>
+     * A clean working tree is reported as a clean flag with empty lists, not as a
+     * sentence, so a caller can branch on it.
+     */
+    public GitStatusResponse getStatus(String projectName)
     {
         Repository repository = getRepository(projectName);
         try (Git git = new Git(repository))
         {
             var status = git.status().call();
-            var sb = new StringBuilder();
-
             String branch = repository.getBranch();
-            sb.append("On branch ").append(branch).append("\n");
 
+            String upstreamBranch = null;
+            Integer aheadCount = null;
+            Integer behindCount = null;
             try
             {
                 BranchTrackingStatus tracking = BranchTrackingStatus.of(repository, branch);
                 if (tracking != null)
                 {
-                    int ahead = tracking.getAheadCount();
-                    int behind = tracking.getBehindCount();
-                    if (ahead > 0 && behind > 0)
-                        sb.append("Your branch is ").append(ahead).append(" ahead, ").append(behind).append(" behind its remote tracking branch.\n");
-                    else if (ahead > 0)
-                        sb.append("Your branch is ").append(ahead).append(" commit(s) ahead of its remote tracking branch.\n");
-                    else if (behind > 0)
-                        sb.append("Your branch is ").append(behind).append(" commit(s) behind its remote tracking branch.\n");
+                    String remoteTracking = tracking.getRemoteTrackingBranch();
+                    upstreamBranch = remoteTracking != null && remoteTracking.startsWith(Constants.R_REMOTES)
+                            ? remoteTracking.substring(Constants.R_REMOTES.length())
+                            : remoteTracking;
+                    aheadCount = tracking.getAheadCount();
+                    behindCount = tracking.getBehindCount();
                 }
             }
             catch (Exception e)
             {
-                // tracking info not available
-            }
-            sb.append("\n");
-
-            Set<String> added = status.getAdded();
-            Set<String> changed = status.getChanged();
-            Set<String> removed = status.getRemoved();
-            if (!added.isEmpty() || !changed.isEmpty() || !removed.isEmpty())
-            {
-                sb.append("Changes to be committed:\n");
-                added.forEach(f -> sb.append("  new file:   ").append(f).append("\n"));
-                changed.forEach(f -> sb.append("  modified:   ").append(f).append("\n"));
-                removed.forEach(f -> sb.append("  deleted:    ").append(f).append("\n"));
-                sb.append("\n");
+                // A branch that tracks nothing. Left as a null upstream, which is what it
+                // is, rather than reported as a failure to produce a status.
             }
 
-            Set<String> modified = status.getModified();
-            Set<String> missing = status.getMissing();
-            if (!modified.isEmpty() || !missing.isEmpty())
-            {
-                sb.append("Changes not staged for commit:\n");
-                modified.forEach(f -> sb.append("  modified:   ").append(f).append("\n"));
-                missing.forEach(f -> sb.append("  deleted:    ").append(f).append("\n"));
-                sb.append("\n");
-            }
-
-            Set<String> untracked = status.getUntracked();
-            if (!untracked.isEmpty())
-            {
-                sb.append("Untracked files:\n");
-                untracked.forEach(f -> sb.append("  ").append(f).append("\n"));
-                sb.append("\n");
-            }
-
-            Set<String> conflicting = status.getConflicting();
-            if (!conflicting.isEmpty())
-            {
-                sb.append("Unmerged paths:\n");
-                conflicting.forEach(f -> sb.append("  both modified: ").append(f).append("\n"));
-                sb.append("\n");
-            }
-
-            if (added.isEmpty() && changed.isEmpty() && removed.isEmpty()
-                    && modified.isEmpty() && missing.isEmpty()
-                    && untracked.isEmpty() && conflicting.isEmpty())
-            {
-                sb.append("nothing to commit, working tree clean\n");
-            }
-
-            return sb.toString();
+            return GitStatusResponse.from(projectName, branch, upstreamBranch, aheadCount, behindCount, status,
+                    mappedProjects(repository));
         }
         catch (Exception e)
         {
@@ -183,28 +272,32 @@ public class GitService
         }
     }
 
-    @SuppressWarnings("deprecation")
-	public String getLog(String projectName, int maxCount)
+    /**
+     * The most recent commits on the current branch.
+     * <p>
+     * One more commit than asked for is walked, so that "the history goes further back"
+     * can be answered without counting the whole graph.
+     */
+    public GitLogResponse getLog(String projectName, int maxCount)
     {
         Repository repository = getRepository(projectName);
+        int limit = Math.max(maxCount, 0);
+
         try (Git git = new Git(repository))
         {
-            var log = git.log().setMaxCount(maxCount).call();
-            var sb = new StringBuilder();
-
-            for (RevCommit commit : log)
+            List<RevCommit> commits = new ArrayList<>();
+            for (RevCommit commit : git.log().setMaxCount(limit + 1).call())
             {
-                sb.append("commit ").append(commit.getName()).append("\n");
-                PersonIdent author = commit.getAuthorIdent();
-                sb.append("Author: ").append(author.getName())
-                  .append(" <").append(author.getEmailAddress()).append(">\n");
-                var sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z");
-                sdf.setTimeZone(author.getTimeZone());
-                sb.append("Date:   ").append(sdf.format(author.getWhen())).append("\n");
-                sb.append("\n    ").append(commit.getFullMessage().trim().replace("\n", "\n    ")).append("\n\n");
+                commits.add(commit);
             }
 
-            return sb.toString();
+            boolean truncated = commits.size() > limit;
+            if (truncated)
+            {
+                commits = commits.subList(0, limit);
+            }
+
+            return GitLogResponse.from(projectName, repository.getBranch(), commits, truncated);
         }
         catch (Exception e)
         {
@@ -212,18 +305,27 @@ public class GitService
         }
     }
 
-    public String addFiles(String projectName, String filePattern)
+    /**
+     * Stages a pathspec, and reports what the index actually gained.
+     * <p>
+     * JGit succeeds against a pathspec that matches no file, so echoing the caller's own
+     * pattern back - "Added: src/Typo.java" - confirmed a stage that never happened and
+     * the commit that followed was silently wrong. The index is compared before and
+     * after instead.
+     */
+    public GitStageResponse addFiles(String projectName, String filePattern)
     {
         Repository repository = getRepository(projectName);
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
-        try
+
+        List<GitFileChange> staged;
+        try (Git git = new Git(repository))
         {
-            try (Git git = new Git(repository))
-            {
-                git.add().addFilepattern(filePattern).call();
-                git.add().setUpdate(true).addFilepattern(filePattern).call();
-            }
+            IndexSnapshot before = indexSnapshot(repository);
+            git.add().addFilepattern(filePattern).call();
+            git.add().setUpdate(true).addFilepattern(filePattern).call();
+            staged = indexDelta(before, indexSnapshot(repository), mappedProjects(repository));
         }
         catch (Exception e)
         {
@@ -234,97 +336,111 @@ public class GitService
             lock.unlock();
         }
         refreshProject(projectName);
-        return "Added: " + filePattern;
+        return GitStageResponse.of(projectName, StageOperation.STAGE, filePattern, staged);
     }
 
-    public String stagePatch(String projectName, String patch)
+    /**
+     * Stages the changes a unified diff describes, leaving the working tree as it was.
+     * <p>
+     * It works by saving the working-tree content of every file the patch names,
+     * checking those files out clean, applying the patch to the clean copies, staging
+     * the result and putting the saved content back. The caller's uncommitted edits are
+     * therefore off disk for the length of the middle three steps, which is why the
+     * restore runs in a {@code finally} rather than at the end of the happy path: it
+     * used to sit inside the {@code try}, so a patch that failed to apply - the common
+     * case for a generated patch - left every file it touched reverted and the edits
+     * gone, while the caller saw only "Failed to stage patch".
+     */
+    public GitStagePatchResponse stagePatch(String projectName, String patch)
     {
         Repository repository = getRepository(projectName);
+        Map<String, String> projects = mappedProjects(repository);
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
+
+        GitStagePatchResponse response;
         try (Git gitCmd = new Git(repository))
         {
-            java.io.File workTree = repository.getWorkTree();
+            File workTree = repository.getWorkTree();
 
-            // Parse the patch to find affected files
-            org.eclipse.jgit.patch.Patch parsedPatch = new org.eclipse.jgit.patch.Patch();
+            Patch parsedPatch = new Patch();
             parsedPatch.parse(new ByteArrayInputStream(patch.getBytes(StandardCharsets.UTF_8)));
 
             if (parsedPatch.getFiles().isEmpty())
             {
-                return "No files affected by patch.";
+                // Reported as a success until now, so an unparseable patch and a staged
+                // one were told apart only by reading the sentence back.
+                String detail = parsedPatch.getErrors().isEmpty()
+                        ? ""
+                        : " First parser error: " + parsedPatch.getErrors().get(0).getMessage();
+                return GitStagePatchResponse.rejected(projectName,
+                        Diagnostic.fatal(DiagnosticCode.PATCH_APPLY_FAILED,
+                                "The patch parsed to no file headers, so nothing was staged. A patch needs"
+                                        + " '--- a/<path>' and '+++ b/<path>' lines and at least one '@@' hunk"
+                                        + " header." + detail));
             }
 
-            // For each file in the patch: save working tree, restore HEAD, apply patch, stage, restore working tree
-            java.util.Map<java.io.File, byte[]> savedWorkingTree = new java.util.HashMap<>();
-
-            for (var fileHeader : parsedPatch.getFiles())
+            List<Diagnostic> pathProblems = validatePatchPaths(repository, projectName, parsedPatch);
+            if (!pathProblems.isEmpty())
             {
-                String filePath = fileHeader.getNewPath();
-                java.io.File file = new java.io.File(workTree, filePath);
-                if (file.exists())
+                // Nothing has been touched yet, so the working tree is intact.
+                return GitStagePatchResponse.failed(projectName, true, List.of(), pathProblems);
+            }
+
+            Map<File, byte[]> savedWorkingTree = new LinkedHashMap<>();
+            for (FileHeader fileHeader : parsedPatch.getFiles())
+            {
+                File file = new File(workTree, patchPath(fileHeader));
+                if (file.isFile())
                 {
                     savedWorkingTree.put(file, Files.readAllBytes(file.toPath()));
                 }
             }
 
-            // Checkout affected files from HEAD to restore original content
-            var checkoutCmd = gitCmd.checkout();
-            for (var fileHeader : parsedPatch.getFiles())
-            {
-                checkoutCmd.addPath(fileHeader.getNewPath());
-            }
-            checkoutCmd.call();
-
-            // Apply the patch to the now-clean working tree files
-            org.eclipse.jgit.api.ApplyResult result = gitCmd.apply()
-                .setPatch(new ByteArrayInputStream(patch.getBytes(StandardCharsets.UTF_8)))
-                .call();
-
-            // Stage the patched files
-            DirCache dirCache = repository.lockDirCache();
+            IndexSnapshot before = indexSnapshot(repository);
+            Exception failure = null;
+            List<Diagnostic> restoreProblems;
             try
             {
-                DirCacheEditor editor = dirCache.editor();
-                ObjectInserter inserter = repository.newObjectInserter();
-
-                for (var file : result.getUpdatedFiles())
+                var checkoutCmd = gitCmd.checkout();
+                for (FileHeader fileHeader : parsedPatch.getFiles())
                 {
-                    byte[] content = Files.readAllBytes(file.toPath());
-                    ObjectId blobId = inserter.insert(Constants.OBJ_BLOB, content);
-
-                    String repoRelativePath = workTree.toPath()
-                        .relativize(file.toPath()).toString().replace('\\', '/');
-
-                    editor.add(new DirCacheEditor.PathEdit(repoRelativePath)
-                    {
-                        @Override
-                        public void apply(DirCacheEntry ent)
-                        {
-                            ent.setObjectId(blobId);
-                            ent.setFileMode(org.eclipse.jgit.lib.FileMode.REGULAR_FILE);
-                            ent.setLength(content.length);
-                            ent.setLastModified(java.time.Instant.now());
-                        }
-                    });
+                    checkoutCmd.addPath(patchPath(fileHeader));
                 }
+                checkoutCmd.call();
 
-                inserter.flush();
-                editor.commit();
+                ApplyResult result = gitCmd.apply()
+                    .setPatch(new ByteArrayInputStream(patch.getBytes(StandardCharsets.UTF_8)))
+                    .call();
+
+                stageFiles(repository, workTree, result.getUpdatedFiles());
+            }
+            catch (Exception e)
+            {
+                failure = e;
             }
             finally
             {
-                dirCache.unlock();
+                restoreProblems = restoreWorkingTree(savedWorkingTree);
             }
 
-            // Restore working tree to the original modified state
-            for (var entry : savedWorkingTree.entrySet())
+            List<String> restoredPaths = repoRelativePaths(workTree, savedWorkingTree.keySet());
+            boolean workingTreePreserved = restoreProblems.isEmpty();
+
+            if (failure != null)
             {
-                Files.write(entry.getKey().toPath(), entry.getValue());
+                List<Diagnostic> diagnostics = new ArrayList<>();
+                diagnostics.add(Diagnostic.fatal(DiagnosticCode.PATCH_APPLY_FAILED,
+                        "The patch did not apply: " + failure.getMessage()));
+                diagnostics.addAll(restoreProblems);
+                response = GitStagePatchResponse.failed(projectName, workingTreePreserved, restoredPaths, diagnostics);
             }
-
-            refreshProject(projectName);
-            return "Patch staged successfully. Files: " + result.getUpdatedFiles().size();
+            else
+            {
+                response = GitStagePatchResponse.staged(projectName,
+                        indexDelta(before, indexSnapshot(repository), projects), workingTreePreserved, restoredPaths,
+                        restoreProblems);
+            }
         }
         catch (Exception e)
         {
@@ -334,9 +450,155 @@ public class GitService
         {
             lock.unlock();
         }
+
+        refreshMappedProjects(repository);
+        return response;
     }
 
-    public String commit(String projectName, String message)
+    /** The repository-relative path a patch file header addresses. */
+    private static String patchPath(FileHeader fileHeader)
+    {
+        return fileHeader.getChangeType() == DiffEntry.ChangeType.DELETE
+                ? fileHeader.getOldPath()
+                : fileHeader.getNewPath();
+    }
+
+    /**
+     * Checks that every path the patch names exists where the patch says it does.
+     * <p>
+     * A patch addresses files from the repository root, while {@code gitDiff},
+     * {@code gitReadFile} and every editing tool take a path relative to the Eclipse
+     * project - and one repository routinely holds several projects, so the two forms
+     * differ for all but a project sitting at the repository root. A patch written in
+     * the project's terms used to check out and apply against paths that do not exist,
+     * stage nothing, and still report success. Where the project-relative reading of a
+     * path does resolve, the diagnostic says so and gives the repository path to use.
+     */
+    private List<Diagnostic> validatePatchPaths(Repository repository, String projectName, Patch parsedPatch)
+    {
+        File workTree = repository.getWorkTree();
+        String projectPrefix = projectPrefix(projectName);
+        List<Diagnostic> problems = new ArrayList<>();
+
+        for (FileHeader fileHeader : parsedPatch.getFiles())
+        {
+            if (fileHeader.getChangeType() == DiffEntry.ChangeType.ADD)
+            {
+                // A patch that creates a file names a path that is not there yet.
+                continue;
+            }
+            String path = patchPath(fileHeader);
+            if (new File(workTree, path).isFile())
+            {
+                continue;
+            }
+
+            String repositoryPath = projectPrefix.isEmpty() ? null : projectPrefix + "/" + path;
+            if (repositoryPath != null && new File(workTree, repositoryPath).isFile())
+            {
+                problems.add(Diagnostic.fatal(DiagnosticCode.PATCH_APPLY_FAILED,
+                        "Patch path '" + path + "' does not exist in the repository. Patch paths are"
+                                + " repository-relative, and project '" + projectName + "' sits at '" + projectPrefix
+                                + "' inside the repository: write the header as '" + repositoryPath + "'."));
+            }
+            else
+            {
+                problems.add(Diagnostic.fatal(DiagnosticCode.PATCH_APPLY_FAILED,
+                        "Patch path '" + path + "' does not exist in the repository working tree."));
+            }
+        }
+        return problems;
+    }
+
+    /** Writes the patched content of each file into the index, leaving the file alone. */
+    private void stageFiles(Repository repository, File workTree, List<File> files) throws IOException
+    {
+        DirCache dirCache = repository.lockDirCache();
+        try
+        {
+            DirCacheEditor editor = dirCache.editor();
+            ObjectInserter inserter = repository.newObjectInserter();
+
+            for (File file : files)
+            {
+                byte[] content = Files.readAllBytes(file.toPath());
+                ObjectId blobId = inserter.insert(Constants.OBJ_BLOB, content);
+
+                String repoRelativePath = workTree.toPath()
+                    .relativize(file.toPath()).toString().replace('\\', '/');
+
+                editor.add(new DirCacheEditor.PathEdit(repoRelativePath)
+                {
+                    @Override
+                    public void apply(DirCacheEntry ent)
+                    {
+                        ent.setObjectId(blobId);
+                        ent.setFileMode(org.eclipse.jgit.lib.FileMode.REGULAR_FILE);
+                        ent.setLength(content.length);
+                        ent.setLastModified(java.time.Instant.now());
+                    }
+                });
+            }
+
+            inserter.flush();
+            editor.commit();
+        }
+        finally
+        {
+            dirCache.unlock();
+        }
+    }
+
+    /**
+     * Puts back the exact bytes each file held before the patch was applied.
+     * <p>
+     * Never throws. It runs on the failure path, where an exception raised here would
+     * replace the report of what went wrong, and the caller would learn neither that
+     * the patch failed nor that its edits are missing.
+     *
+     * @return one diagnostic per file whose content could not be written back, empty
+     *         when the working tree is exactly as it was
+     */
+    private List<Diagnostic> restoreWorkingTree(Map<File, byte[]> savedWorkingTree)
+    {
+        List<Diagnostic> problems = new ArrayList<>();
+        for (Map.Entry<File, byte[]> entry : savedWorkingTree.entrySet())
+        {
+            try
+            {
+                Files.write(entry.getKey().toPath(), entry.getValue());
+            }
+            catch (Exception e)
+            {
+                logger.error("Failed to restore working tree file: " + entry.getKey(), e);
+                problems.add(Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                        "The working tree content of '" + entry.getKey().getName() + "' could not be restored after"
+                                + " staging the patch, and the file now holds its committed content: "
+                                + e.getMessage()));
+            }
+        }
+        return problems;
+    }
+
+    private static List<String> repoRelativePaths(File workTree, Collection<File> files)
+    {
+        List<String> paths = new ArrayList<>();
+        for (File file : files)
+        {
+            paths.add(workTree.toPath().relativize(file.toPath()).toString().replace('\\', '/'));
+        }
+        paths.sort(Comparator.naturalOrder());
+        return paths;
+    }
+
+    /**
+     * The commit a {@code gitCommit} produced.
+     * <p>
+     * The sha used to be glued to the commit's subject by a single space, and subjects
+     * contain spaces themselves - so the obvious split recovered the sha and mangled the
+     * message. It is the handle for every next action, and is now a field.
+     */
+    public GitCommitResponse commit(String projectName, String message)
     {
         Repository repository = getRepository(projectName);
         ReentrantLock lock = getRepositoryLock(repository);
@@ -344,8 +606,9 @@ public class GitService
         try (Git git = new Git(repository))
         {
             RevCommit commit = git.commit().setMessage(message).call();
+            String branch = repository.getBranch();
             refreshProject(projectName);
-            return "Committed: " + commit.getName() + " " + commit.getShortMessage();
+            return GitCommitResponse.of(projectName, branch, GitLogResponse.toCommit(commit));
         }
         catch (Exception e)
         {
@@ -438,24 +701,27 @@ public class GitService
         }
     }
 
-    public String getDiff(String projectName, boolean staged)
-    {
-        return getDiff(projectName, staged, null, false);
-    }
-
-    public String getDiff(String projectName, boolean staged, String pathFilter, boolean ignoreWhitespace)
+    /**
+     * The staged or unstaged differences of the repository a project is mapped into.
+     * <p>
+     * Three outcomes used to share the one returned String - hunks, an empty string, and
+     * the sentence "No commits yet." - so an unchanged tree, a fresh repository and a
+     * failure were told apart by reading prose. The hunks are still a string, because a
+     * unified diff is a machine format with a parser everywhere, but each file in it is
+     * also listed with the project and project-relative path the reading and editing
+     * tools take, since Git names paths from the repository root and none of them accept
+     * that form.
+     */
+    public GitDiffResponse getDiff(String projectName, boolean staged, String pathFilter, boolean ignoreWhitespace)
     {
         Repository repository = getRepository(projectName);
         List<String> repositoryPaths = resolveDiffPaths(projectName, pathFilter);
+        Map<String, String> projects = mappedProjects(repository);
 
         try (var out = new ByteArrayOutputStream();
              var formatter = new DiffFormatter(out))
         {
-            ObjectId head = repository.resolve("HEAD");
-            if (head == null)
-            {
-                return "No commits yet.";
-            }
+            ObjectId head = repository.resolve(Constants.HEAD);
 
             RawTextComparator comparator = ignoreWhitespace ? RawTextComparator.WS_IGNORE_ALL : RawTextComparator.DEFAULT;
             formatter.setRepository(repository);
@@ -466,19 +732,32 @@ public class GitService
                 formatter.setPathFilter(PathFilterGroup.createFromStrings(repositoryPaths));
             }
 
+            // A repository with no commits has no HEAD to compare against. The empty
+            // tree is what Git itself compares a fresh index with, so the staged changes
+            // are still reported rather than replaced by a sentence.
             AbstractTreeIterator oldTree = staged
-                    ? prepareTreeParser(repository, head)
+                    ? (head == null ? new EmptyTreeIterator() : prepareTreeParser(repository, head))
                     : prepareIndexTreeParser(repository);
             AbstractTreeIterator newTree = staged
                     ? prepareIndexTreeParser(repository)
                     : new FileTreeIterator(repository);
 
             List<DiffEntry> diffs = formatter.scan(oldTree, newTree);
+
+            // The line counts come from the EditList JGit builds to render each file, so
+            // they agree with the body by construction.
+            List<GitDiffResponse.GitFileDiff> files = new ArrayList<>();
             for (DiffEntry diff : diffs)
             {
-                formatter.format(diff);
+                files.add(GitDiffResponse.file(formatter.toFileHeader(diff), projects));
             }
-            return out.toString(StandardCharsets.UTF_8);
+            formatter.format(diffs);
+
+            String fromLabel = staged ? (head == null ? "EMPTY_TREE" : "HEAD") : "INDEX";
+            String toLabel = staged ? "INDEX" : "WORKING_TREE";
+
+            return GitDiffResponse.of(projectName, staged, fromLabel, toLabel, head == null ? null : head.getName(),
+                    files, out.toString(StandardCharsets.UTF_8));
         }
         catch (IllegalArgumentException e)
         {
@@ -497,9 +776,7 @@ public class GitService
             return List.of();
         }
 
-        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-        RepositoryMapping mapping = RepositoryMapping.getMapping(project);
-        String projectPrefix = mapping == null ? "" : mapping.getRepoRelativePath(project);
+        String projectPrefix = projectPrefix(projectName);
 
         return java.util.Arrays.stream(pathFilter.split(","))
                 .map(String::trim)
@@ -518,34 +795,26 @@ public class GitService
                 .toList();
     }
 
-    public String listBranches(String projectName, boolean includeRemote)
+    /**
+     * The repository's branches, with the checked-out one flagged.
+     * <p>
+     * Remote-tracking branches are kept in their own list: only a local branch can be
+     * checked out or deleted, and a caller choosing one should not have to notice a
+     * {@code origin/} prefix to know that.
+     */
+    public GitBranchResponse listBranches(String projectName, boolean includeRemote)
     {
         Repository repository = getRepository(projectName);
         try (Git git = new Git(repository))
         {
-            String currentBranch = repository.getBranch();
-            var sb = new StringBuilder();
-
             var cmd = git.branchList();
             if (includeRemote)
             {
                 cmd.setListMode(ListBranchCommand.ListMode.ALL);
             }
+            List<Ref> refs = cmd.call();
 
-            var branches = cmd.call();
-            for (var ref : branches)
-            {
-                String name = ref.getName();
-                if (name.startsWith("refs/heads/"))
-                    name = name.substring("refs/heads/".length());
-                else if (name.startsWith("refs/remotes/"))
-                    name = name.substring("refs/remotes/".length());
-
-                boolean isCurrent = name.equals(currentBranch);
-                sb.append(isCurrent ? "* " : "  ").append(name).append("\n");
-            }
-
-            return sb.toString();
+            return GitBranchResponse.from(projectName, repository.getBranch(), refs);
         }
         catch (Exception e)
         {
@@ -573,14 +842,28 @@ public class GitService
         }
     }
 
-    public String deleteBranch(String projectName, String branchName, boolean force)
+    /**
+     * Deletes a branch, or says why it did not.
+     * <p>
+     * Refusing to delete unmerged work is the safety check doing its job, not a fault,
+     * and it is the one failure here whose remedy is mechanical - so it arrives as
+     * {@code deleted: false} with a code naming the retry, rather than as an exception a
+     * caller has to read.
+     */
+    public GitDeleteBranchResponse deleteBranch(String projectName, String branchName, boolean force)
     {
         Repository repository = getRepository(projectName);
         try (Git git = new Git(repository))
         {
-            var cmd = git.branchDelete().setBranchNames(branchName).setForce(force);
-            var deleted = cmd.call();
-            return "Deleted branch: " + String.join(", ", deleted);
+            List<String> deleted = git.branchDelete().setBranchNames(branchName).setForce(force).call();
+            return GitDeleteBranchResponse.deleted(projectName, branchName, force, deleted);
+        }
+        catch (NotMergedException e)
+        {
+            return GitDeleteBranchResponse.failed(projectName, branchName, force,
+                    Diagnostic.fatal(DiagnosticCode.BRANCH_NOT_MERGED,
+                            "Branch '" + branchName + "' is not fully merged into HEAD, so deleting it would lose"
+                                    + " commits. Call again with force=true to delete it anyway."));
         }
         catch (Exception e)
         {
@@ -588,16 +871,38 @@ public class GitService
         }
     }
 
-    public String checkoutBranch(String projectName, String branchName)
+    /**
+     * Switches the working tree to another branch.
+     * <p>
+     * Two things were prose. A checkout blocked by local changes threw with JGit's
+     * conflicting paths flattened into the message, so the one actionable fact - which
+     * files stand in the way - had to be recovered by splitting a sentence. And a
+     * checkout rewrites the working tree of the whole repository, which routinely holds
+     * more than one project, while only the named project was refreshed.
+     */
+    public GitCheckoutResponse checkoutBranch(String projectName, String branchName)
     {
         Repository repository = getRepository(projectName);
+        Map<String, String> projects = mappedProjects(repository);
+        String previousBranch = currentBranch(repository);
+
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
         try (Git git = new Git(repository))
         {
             git.checkout().setName(branchName).call();
-            refreshProject(projectName);
-            return "Switched to branch: " + branchName;
+        }
+        catch (CheckoutConflictException e)
+        {
+            List<GitFileChange> blocking = new ArrayList<>();
+            for (String path : e.getConflictingPaths())
+            {
+                blocking.add(GitStatusResponse.locate(path, ChangeType.CONFLICTING, projects));
+            }
+            return GitCheckoutResponse.blocked(projectName, branchName, previousBranch, headSha(repository), blocking,
+                    Diagnostic.fatal(DiagnosticCode.CHECKOUT_CONFLICT,
+                            "Local changes to " + blocking.size() + " file(s) would be overwritten by checking out '"
+                                    + branchName + "'. Commit, stash or reset them first."));
         }
         catch (Exception e)
         {
@@ -607,18 +912,30 @@ public class GitService
         {
             lock.unlock();
         }
+
+        List<String> refreshed = refreshMappedProjects(repository);
+        return GitCheckoutResponse.switched(projectName, branchName, previousBranch, currentBranch(repository),
+                headSha(repository), refreshed);
     }
 
-    public String resetFiles(String projectName, String filePattern)
+    /**
+     * Resets index entries to HEAD, and reports what actually left the staged set.
+     * <p>
+     * As with {@link #addFiles}, echoing the caller's own pathspec back confirmed an
+     * unstage that a non-matching pattern never performed.
+     */
+    public GitStageResponse resetFiles(String projectName, String filePattern)
     {
         Repository repository = getRepository(projectName);
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
+
+        List<GitFileChange> unstaged;
         try (Git git = new Git(repository))
         {
+            IndexSnapshot before = indexSnapshot(repository);
             git.reset().addPath(filePattern).call();
-            refreshProject(projectName);
-            return "Unstaged: " + filePattern;
+            unstaged = indexDelta(before, indexSnapshot(repository), mappedProjects(repository));
         }
         catch (Exception e)
         {
@@ -628,13 +945,25 @@ public class GitService
         {
             lock.unlock();
         }
+        refreshProject(projectName);
+        return GitStageResponse.of(projectName, StageOperation.UNSTAGE, filePattern, unstaged);
     }
 
-    public String stash(String projectName, String message)
+    /**
+     * Stashes the working tree.
+     * <p>
+     * The stash commit - the only durable handle on the work just taken off the working
+     * tree - used to be returned inside a sentence, and having nothing to stash was
+     * returned as another sentence in place of a result, while the sibling
+     * {@link #stashList} already reported an empty stash as a count.
+     */
+    public GitStashResponse stash(String projectName, String message)
     {
         Repository repository = getRepository(projectName);
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
+
+        GitStashResponse response;
         try (Git git = new Git(repository))
         {
             var cmd = git.stashCreate();
@@ -642,13 +971,14 @@ public class GitService
             {
                 cmd.setWorkingDirectoryMessage(message);
             }
-            var stashRef = cmd.call();
-            refreshProject(projectName);
-            if (stashRef == null)
-            {
-                return "No local changes to stash.";
-            }
-            return "Stashed working directory: " + stashRef.getName();
+            RevCommit stashRef = cmd.call();
+            int totalStashes = git.stashList().call().size();
+
+            response = stashRef == null
+                    ? GitStashResponse.nothingToStash(projectName, totalStashes)
+                    : GitStashResponse.stashed(projectName,
+                            new GitStash(0, "stash@{0}", stashRef.getName(), stashRef.getShortMessage()),
+                            totalStashes);
         }
         catch (Exception e)
         {
@@ -658,19 +988,56 @@ public class GitService
         {
             lock.unlock();
         }
+        refreshMappedProjects(repository);
+        return response;
     }
 
-    public String stashPop(String projectName)
+    /**
+     * Applies the most recent stash entry and, if that succeeded, removes it.
+     * <p>
+     * "Applied and dropped stash." was a lie in the one case a caller must notice: a
+     * stash that does not apply cleanly throws out of the apply, so the drop never runs
+     * - the entry is still there, the working tree carries conflict markers, and none of
+     * that reached the caller. Applying and dropping are two facts and are reported as
+     * two.
+     */
+    public GitStashPopResponse stashPop(String projectName)
     {
         Repository repository = getRepository(projectName);
+        Map<String, String> projects = mappedProjects(repository);
         ReentrantLock lock = getRepositoryLock(repository);
         lock.lock();
+
+        GitStashPopResponse response;
         try (Git git = new Git(repository))
         {
-            git.stashApply().call();
-            git.stashDrop().call();
-            refreshProject(projectName);
-            return "Applied and dropped stash.";
+            List<RevCommit> stashes = new ArrayList<>(git.stashList().call());
+            if (stashes.isEmpty())
+            {
+                // An empty stash is a result, exactly as it is for gitStashList.
+                return GitStashPopResponse.nothingToApply(projectName);
+            }
+            RevCommit top = stashes.get(0);
+
+            try
+            {
+                git.stashApply().call();
+                git.stashDrop().call();
+                response = GitStashPopResponse.applied(projectName, "stash@{0}", top.getName(), top.getShortMessage());
+            }
+            catch (StashApplyFailureException e)
+            {
+                List<GitFileChange> conflicting = new ArrayList<>();
+                for (String path : git.status().call().getConflicting())
+                {
+                    conflicting.add(GitStatusResponse.locate(path, ChangeType.CONFLICTING, projects));
+                }
+                response = GitStashPopResponse.conflicted(projectName, "stash@{0}", top.getName(),
+                        top.getShortMessage(), conflicting,
+                        Diagnostic.fatal(DiagnosticCode.MERGE_CONFLICT,
+                                "The stash did not apply cleanly, so it was kept as stash@{0} and the working tree"
+                                        + " holds conflict markers. Resolve the conflicting files, then drop it."));
+            }
         }
         catch (Exception e)
         {
@@ -680,26 +1047,23 @@ public class GitService
         {
             lock.unlock();
         }
+
+        refreshMappedProjects(repository);
+        return response;
     }
 
-    public String stashList(String projectName)
+    /**
+     * The stash entries, most recent first.
+     * <p>
+     * An empty stash is a result: the response says so with a count of zero, so a caller
+     * never has to tell an empty stash from a failed call by reading a sentence.
+     */
+    public GitStashListResponse stashList(String projectName)
     {
         Repository repository = getRepository(projectName);
         try (Git git = new Git(repository))
         {
-            var stashes = git.stashList().call();
-            if (!stashes.iterator().hasNext())
-            {
-                return "No stashes found.";
-            }
-            var sb = new StringBuilder();
-            int index = 0;
-            for (RevCommit stash : stashes)
-            {
-                sb.append("stash@{").append(index++).append("}: ")
-                  .append(stash.getShortMessage()).append("\n");
-            }
-            return sb.toString();
+            return GitStashListResponse.from(projectName, git.stashList().call());
         }
         catch (Exception e)
         {
@@ -736,6 +1100,87 @@ public class GitService
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    /**
+     * The index at a moment in time: the blob each path points at, and what each path is
+     * staged as relative to HEAD.
+     * <p>
+     * Both halves are needed to say what an operation actually staged. The blob answers
+     * "did this entry change at all" - restaging an edited file leaves the kind of change
+     * alone, so comparing kinds would miss it - and the kind answers "as what", which is
+     * what a caller reads.
+     */
+    private record IndexSnapshot(Map<String, ObjectId> blobs, Map<String, ChangeType> stagedTypes)
+    {
+    }
+
+    private IndexSnapshot indexSnapshot(Repository repository) throws IOException
+    {
+        Map<String, ObjectId> blobs = new LinkedHashMap<>();
+        DirCache dirCache = repository.readDirCache();
+        for (int i = 0; i < dirCache.getEntryCount(); i++)
+        {
+            DirCacheEntry entry = dirCache.getEntry(i);
+            blobs.put(entry.getPathString(), entry.getObjectId());
+        }
+
+        Map<String, ChangeType> stagedTypes = new LinkedHashMap<>();
+        try (var out = new ByteArrayOutputStream();
+             var formatter = new DiffFormatter(out))
+        {
+            formatter.setRepository(repository);
+            formatter.setDetectRenames(false);
+
+            ObjectId head = repository.resolve(Constants.HEAD);
+            AbstractTreeIterator headTree = head == null
+                    ? new EmptyTreeIterator()
+                    : prepareTreeParser(repository, head);
+
+            for (DiffEntry diff : formatter.scan(headTree, prepareIndexTreeParser(repository)))
+            {
+                switch (diff.getChangeType())
+                {
+                    case ADD, COPY -> stagedTypes.put(diff.getNewPath(), ChangeType.ADDED);
+                    case DELETE -> stagedTypes.put(diff.getOldPath(), ChangeType.DELETED);
+                    default -> stagedTypes.put(diff.getNewPath(), ChangeType.MODIFIED);
+                }
+            }
+        }
+        return new IndexSnapshot(blobs, stagedTypes);
+    }
+
+    /**
+     * The index entries an operation created, changed or dropped.
+     * <p>
+     * This is what {@code gitAdd} and {@code gitReset} report instead of echoing the
+     * caller's own pathspec: a pattern that matches nothing produces an empty list rather
+     * than a confirmation.
+     */
+    private static List<GitFileChange> indexDelta(IndexSnapshot before, IndexSnapshot after,
+            Map<String, String> projectsByPrefix)
+    {
+        Set<String> paths = new TreeSet<>();
+        paths.addAll(before.blobs().keySet());
+        paths.addAll(after.blobs().keySet());
+
+        List<GitFileChange> changed = new ArrayList<>();
+        for (String path : paths)
+        {
+            if (Objects.equals(before.blobs().get(path), after.blobs().get(path)))
+            {
+                continue;
+            }
+            ChangeType changeType = after.stagedTypes().get(path);
+            if (changeType == null)
+            {
+                // The entry no longer differs from HEAD - it was unstaged - so what it
+                // had been staged as is the useful thing to report.
+                changeType = before.stagedTypes().getOrDefault(path, ChangeType.MODIFIED);
+            }
+            changed.add(GitStatusResponse.locate(path, changeType, projectsByPrefix));
+        }
+        return changed;
     }
 
     private static AbstractTreeIterator prepareTreeParser(Repository repository, ObjectId objectId) throws IOException

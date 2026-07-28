@@ -1,6 +1,7 @@
 package com.github.gradusnikov.eclipse.assistai.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +12,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationRegistry;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.OperationStatusResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.servers.EclipseIntegrationsMcpServer;
 import com.github.gradusnikov.eclipse.assistai.mcp.servers.PDEMcpServer;
 
@@ -31,10 +33,18 @@ public class McpServerFactoryPDETest
         String listResult = (String) executor.call( "listOperations", Map.of() ).get();
         assertEquals( "No operations have been started.", listResult );
 
-        String statusResult = (String) executor
+        // getOperationStatus returns a StructuredToolResult: the payload a caller
+        // branches on, plus polling text that says more than the payload does.
+        StructuredToolResult statusResult = (StructuredToolResult) executor
                 .call( "getOperationStatus", Map.of( "operationId", "op-does-not-exist", "outputOffset", "-100", "outputLimit", "50", "waitSeconds", "0" ) )
                 .get();
-        assertTrue( statusResult.contains( "no operation with id 'op-does-not-exist'" ) );
+
+        assertTrue( statusResult.text().contains( "no operation with id 'op-does-not-exist'" ) );
+
+        OperationStatusResponse status = (OperationStatusResponse) statusResult.data();
+        assertEquals( "op-does-not-exist", status.operationId() );
+        assertEquals( "UNKNOWN", status.state(), "an unknown id is a state, not only a sentence" );
+        assertNull( status.result() );
     }
 
     @Test

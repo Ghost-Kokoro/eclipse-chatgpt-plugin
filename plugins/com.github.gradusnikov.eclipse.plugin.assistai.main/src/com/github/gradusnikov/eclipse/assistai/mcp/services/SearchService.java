@@ -26,6 +26,8 @@ import org.eclipse.search.core.text.TextSearchRequestor;
 import org.eclipse.search.core.text.TextSearchScope;
 
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
+import com.github.gradusnikov.eclipse.assistai.tools.LineOffsets;
+import com.github.gradusnikov.eclipse.assistai.tools.LineOffsets.LineInfo;
 import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
 
 import jakarta.inject.Inject;
@@ -145,7 +147,7 @@ public class SearchService
                 synchronized (matchesByFile)
                 {
                     matchesByFile.computeIfAbsent(file, f -> new ArrayList<>())
-                            .add(new LineMatch(lineInfo.lineNumber, offset, length));
+                            .add(new LineMatch(lineInfo.lineNumber(), offset, length));
                 }
 
                 return true;
@@ -205,7 +207,7 @@ public class SearchService
         byte[] bytes = modified.getBytes(charset);
         try (ByteArrayInputStream in = new ByteArrayInputStream(bytes))
         {
-            file.setContents(in, IResource.FORCE, null);
+            file.setContents(in, IResource.FORCE | IResource.KEEP_HISTORY, null);
         }
 
         file.refreshLocal(IResource.DEPTH_ZERO, null);
@@ -269,7 +271,7 @@ public class SearchService
                 int matchOffset = matchAccess.getMatchOffset();
 
                 LineInfo lineInfo = getLineInfo(file, matchOffset);
-                results.add(new SearchResult(file, lineInfo.lineNumber, lineInfo.lineContent));
+                results.add(new SearchResult(file, lineInfo.lineNumber(), lineInfo.lineContent()));
                 return true;
             }
         };
@@ -288,40 +290,27 @@ public class SearchService
         }
     }
 
-    private record LineInfo(int lineNumber, String lineContent)
-    {
-
-    }
-
+    /**
+     * Resolves a match offset reported by the search engine to the line holding it.
+     * <p>
+     * The offset counts every character the engine read, terminators included, so the
+     * whole content is handed to the platform's line tracker rather than reconstructed
+     * from stripped lines - see {@link LineOffsets} for what goes wrong otherwise.
+     */
     private static LineInfo getLineInfo(IFile file, int offset)
     {
         if (file == null)
         {
-            return new LineInfo(-1, "");
+            return LineOffsets.UNKNOWN;
         }
 
         try
         {
-            List<String> lines = ResourceUtilities.readFileLines(file);
-
-            // Compute line number from offset by walking through lines and accounting for '\n'.
-            int charCount = 0;
-            for (int i = 0; i < lines.size(); i++)
-            {
-                String line = lines.get(i);
-                int nextCharCount = charCount + line.length() + 1;
-                if (offset < nextCharCount)
-                {
-                    return new LineInfo(i + 1, line);
-                }
-                charCount = nextCharCount;
-            }
-
-            return new LineInfo(-1, "");
+            return LineOffsets.lineInfoAt(ResourceUtilities.readFileContent(file), offset);
         }
         catch (CoreException | IOException e)
         {
-            return new LineInfo(-1, "");
+            return LineOffsets.UNKNOWN;
         }
     }
 

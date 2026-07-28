@@ -128,14 +128,18 @@ public class ResourceCache implements IResourceChangeListener {
         int newVersion = existing != null ? existing.version() + 1 : 1;
         
         long fileModTime = 0;
+        long modificationStamp = org.eclipse.core.resources.IResource.NULL_STAMP;
         if (descriptor.workspacePath() != null) {
             var wsFile = descriptor.toWorkspaceFile();
             if (wsFile.isPresent()) {
                 fileModTime = wsFile.get().getLocalTimeStamp();
+                // The workspace's own version of the content being cached, so a later
+                // edit can tell whether what it read is still what is on disk.
+                modificationStamp = wsFile.get().getModificationStamp();
             }
         }
         
-        CachedResource cached = CachedResource.create(descriptor, content, newVersion, fileModTime);
+        CachedResource cached = CachedResource.create(descriptor, content, newVersion, fileModTime, modificationStamp);
         
         // Evict if necessary before adding
         evictIfNecessary(cached.estimateTokens());
@@ -155,16 +159,6 @@ public class ResourceCache implements IResourceChangeListener {
         logger.info("ResourceCache: Cached " + uri + " (v" + newVersion + ", ~" + cached.estimateTokens() + " tokens)");
         
         return cached;
-    }
-    
-    /**
-     * Convenience method to cache a ResourceToolResult.
-     */
-    public synchronized CachedResource put(ResourceToolResult result) {
-        if (result == null || !result.isCacheable()) {
-            return null;
-        }
-        return put(result.descriptor(), result.content());
     }
     
     /**
@@ -297,25 +291,30 @@ public class ResourceCache implements IResourceChangeListener {
     }
     
     /**
-     * Generates a short summary of cached resources (for UI display).
-     */
-    public synchronized String toSummary() {
-        if (resources.isEmpty()) {
-            return "No resources cached";
-        }
-        
-        return resources.values().stream()
-            .map(CachedResource::toSummary)
-            .collect(Collectors.joining("\n- ", "- ", ""));
-    }
-    
-    /**
      * Gets cache statistics.
      */
     public synchronized String getStats() {
         return String.format("Resources: %d/%d, Tokens: ~%d/%d", 
             resources.size(), MAX_RESOURCES,
             estimateTotalTokens(), MAX_TOTAL_TOKENS);
+    }
+    
+    /**
+     * The number of resources held before the least recently used one is evicted.
+     * <p>
+     * The cache tools report this beside the current count: knowing that three
+     * resources are cached says nothing without knowing what the cache holds.
+     */
+    public int maxResources() {
+        return MAX_RESOURCES;
+    }
+    
+    /**
+     * The estimated token budget across all cached resources, beyond which entries are
+     * evicted to make room.
+     */
+    public int maxTotalTokens() {
+        return MAX_TOTAL_TOKENS;
     }
     
     // --- Eviction ---
@@ -473,7 +472,8 @@ public class ResourceCache implements IResourceChangeListener {
             
             int newVersion = existing.version() + 1;
             long fileModTime = file.getLocalTimeStamp();
-            CachedResource updated = CachedResource.create(descriptor, newContent, newVersion, fileModTime);
+            CachedResource updated = CachedResource.create(descriptor, newContent, newVersion, fileModTime,
+                    file.getModificationStamp());
             
             resources.put(uri, updated);
             
@@ -514,7 +514,6 @@ public class ResourceCache implements IResourceChangeListener {
         IJavaElement element = JavaCore.create(file);
         if (element instanceof ICompilationUnit cu) {
             if (decodedPath.contains("#")) {
-                String fqn = decodedPath.substring(0, decodedPath.indexOf('#'));
                 String methodName = decodedPath.substring(decodedPath.indexOf('#') + 1);
                 IType type = cu.findPrimaryType();
                 if (type != null) {
@@ -522,7 +521,7 @@ public class ResourceCache implements IResourceChangeListener {
                         if (method.getElementName().equals(methodName)) {
                             String source = method.getSource();
                             if (source != null && !source.isBlank()) {
-                                return formatContent(fqn + "#" + methodName, source);
+                                return source;
                             }
                         }
                     }
@@ -532,29 +531,13 @@ public class ResourceCache implements IResourceChangeListener {
                 if (type != null) {
                     String source = ((ISourceReference) type).getSource();
                     if (source != null && !source.isBlank()) {
-                        return formatContent(decodedPath, source);
+                        return source;
                     }
                 }
             }
         }
         
         return readFileContent(file);
-    }
-    
-    /**
-     * Formats content with a label header and line numbers, matching ResourceCacheHelper format.
-     */
-    private String formatContent(String label, String content) {
-        String[] lines = content.split("\n");
-        int numDigits = Integer.toString(lines.length).length();
-        
-        StringBuilder out = new StringBuilder();
-        out.append("=== FILE: ").append(label).append(" ===\n");
-        for (int i = 0; i < lines.length; i++) {
-            out.append(String.format("%0" + numDigits + "d: %s\n", i + 1, lines[i]));
-        }
-        out.append("=== END FILE ===\n");
-        return out.toString();
     }
     
     /**

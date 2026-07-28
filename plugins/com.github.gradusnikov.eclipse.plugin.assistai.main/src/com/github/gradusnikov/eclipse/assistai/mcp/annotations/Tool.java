@@ -46,4 +46,20 @@ public @interface Tool
      * minutes - so that its value is not misread as an inline wait.
      */
     public String inlineWaitParam() default "timeout";
+
+    /**
+     * The type of the payload this tool puts in {@code structuredContent}, when it
+     * returns one.
+     * <p>
+     * The framework generates the tool's advertised {@code outputSchema} from this
+     * class, so a client can see what fields to expect instead of parsing the text
+     * block. The tool itself returns a
+     * {@link com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult} whose
+     * {@code data} is an instance of it.
+     * <p>
+     * Left as {@code Void} for the tools that legitimately return prose - a status
+     * listing, a formatted report - where there is no object to describe and
+     * advertising an empty schema would be a lie.
+     */
+    public Class<?> outputType() default Void.class;
 }

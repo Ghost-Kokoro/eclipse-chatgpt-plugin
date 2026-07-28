@@ -75,9 +75,8 @@ public class ResourceCacheHelper
             if (isTextFile(file))
             {
                 String content = readWorkspaceFileContent(file);
-                String formattedContent = formatFileContent(file.getFullPath().toString(), content);
                 ResourceDescriptor descriptor = ResourceDescriptor.fromWorkspaceFile(file, TOOL_NAME);
-                resourceCache.put(descriptor, formattedContent);
+                resourceCache.put(descriptor, content);
                 logger.info("Added workspace file to cache: " + file.getFullPath());
             }
             else if (isImageFile(file))
@@ -149,9 +148,8 @@ public class ResourceCacheHelper
                 }
                 return;
             }
-            String formattedContent = formatFileContent(type.getFullyQualifiedName(), source);
             ResourceDescriptor descriptor = ResourceDescriptor.fromJavaType(type, TOOL_NAME);
-            resourceCache.put(descriptor, formattedContent);
+            resourceCache.put(descriptor, source);
             logger.info("Added Java type to cache: " + type.getFullyQualifiedName());
         }
         catch (JavaModelException e)
@@ -186,9 +184,8 @@ public class ResourceCacheHelper
             }
             IType declaringType = method.getDeclaringType();
             String label = declaringType.getFullyQualifiedName() + "#" + method.getElementName();
-            String formattedContent = formatFileContent(label, source);
             ResourceDescriptor descriptor = ResourceDescriptor.fromJavaMethod(method, TOOL_NAME);
-            resourceCache.put(descriptor, formattedContent);
+            resourceCache.put(descriptor, source);
             logger.info("Added Java method to cache: " + label);
         }
         catch (JavaModelException e)
@@ -207,7 +204,6 @@ public class ResourceCacheHelper
         try
         {
             String content = readExternalFileContent(file);
-            String formattedContent = formatFileContent(file.getAbsolutePath(), content);
             URI uri = file.toURI();
             ResourceDescriptor descriptor = new ResourceDescriptor(
                 uri,
@@ -216,7 +212,7 @@ public class ResourceCacheHelper
                 null, // No workspace path for external files
                 TOOL_NAME
             );
-            resourceCache.put(descriptor, formattedContent);
+            resourceCache.put(descriptor, content);
             logger.info("Added external file to cache: " + file.getAbsolutePath());
         }
         catch (IOException e)
@@ -255,7 +251,6 @@ public class ResourceCacheHelper
      */
     public void addTextContent(String name, String content)
     {
-        String formattedContent = formatFileContent(name, content);
         URI uri = URI.create("text:///" + name.replace(" ", "_") + "_" + System.currentTimeMillis());
         ResourceDescriptor descriptor = new ResourceDescriptor(
             uri,
@@ -264,7 +259,7 @@ public class ResourceCacheHelper
             null,
             TOOL_NAME
         );
-        resourceCache.put(descriptor, formattedContent);
+        resourceCache.put(descriptor, content);
         logger.info("Added text content to cache: " + name);
     }
     
@@ -313,21 +308,6 @@ public class ResourceCacheHelper
         byte[] fileContent = IOUtils.toByteArray(new BufferedInputStream(new FileInputStream(file)));
         String charsetName = contentTypeDetector.detectCharset(Arrays.copyOf(fileContent, Math.min(fileContent.length, 4096)));
         return new String(fileContent, charsetName);
-    }
-    
-    private String formatFileContent(String path, String content)
-    {
-        String[] lines = content.split("\n");
-        int numDigits = Integer.toString(lines.length).length();
-        
-        StringBuilder out = new StringBuilder();
-        out.append("=== FILE: ").append(path).append(" ===\n");
-        for (int i = 0; i < lines.length; i++)
-        {
-            out.append(String.format("%0" + numDigits + "d: %s\n", i + 1, lines[i]));
-        }
-        out.append("=== END FILE ===\n");
-        return out.toString();
     }
     
     private String formatDirectoryListing(IContainer container) throws CoreException

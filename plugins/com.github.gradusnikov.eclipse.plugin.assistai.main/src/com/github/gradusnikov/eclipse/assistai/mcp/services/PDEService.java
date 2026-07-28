@@ -9,9 +9,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Optional;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationContext;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.ProcessOutputSource;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse.CoverageResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse.RunStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse.TestSummary;
+
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.core.resources.IFile;
@@ -19,6 +28,7 @@ import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.jobs.IJobChangeEvent;
@@ -72,54 +82,35 @@ public class PDEService
     // Target platform
     // -------------------------------------------------------------------------
 
+    /** How long we wait for a target platform to load before giving up on it. */
+    private static final int TARGET_LOAD_TIMEOUT_SECONDS = 120;
+
     /**
-     * Returns a description of the currently active target platform.
-     * If the workspace is using the running platform (no explicit target set),
-     * returns a message saying so.
+     * The target platform the workspace is building against, or the running-platform
+     * state when no target file is set.
      */
-    public String getActiveTarget()
+    public ActiveTargetResponse getActiveTarget()
     {
         try
         {
-            ITargetPlatformService service = getTargetPlatformService();
-            ITargetHandle handle = service.getWorkspaceTargetHandle();
-
-            if ( handle == null )
-            {
-                return "Active target: <running platform> (no explicit target file set)";
-            }
-
-            ITargetDefinition definition = handle.getTargetDefinition();
-            String name = definition.getName() != null ? definition.getName() : "<unnamed>";
-
-            StringBuilder sb = new StringBuilder();
-            sb.append( "Active target: " ).append( name ).append( "\n" );
-            sb.append( "Memento: " ).append( handle.getMemento() ).append( "\n" );
-            sb.append( "Exists: " ).append( handle.exists() ).append( "\n" );
-            sb.append( "Resolved: " ).append( definition.isResolved() ).append( "\n" );
-
-            if ( definition.isResolved() )
-            {
-                var bundles = definition.getBundles();
-                sb.append( "Bundle count: " ).append( bundles != null ? bundles.length : 0 ).append( "\n" );
-            }
-
-            return sb.toString();
+            return describeWorkspaceTarget();
         }
-        catch ( CoreException e )
+        catch ( Exception e )
         {
-            return "Error getting active target: " + e.getMessage();
+            return ActiveTargetResponse.failed( Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                "Could not read the active target platform: " + e.getMessage() ) );
         }
     }
 
     /**
      * Sets the active target platform to the given workspace-relative target file path
-     * (e.g. "MyProject/my.target"). The job runs asynchronously; this method waits
-     * up to 120 seconds for it to complete.
+     * (e.g. "MyProject/my.target"). The job runs asynchronously; this method waits up to
+     * {@link #TARGET_LOAD_TIMEOUT_SECONDS} seconds for it and then reports the target
+     * that is in force - which, when the load failed, is not the one that was asked for.
      *
      * @param targetFilePath workspace-relative path to the .target file
      */
-    public String setActiveTarget( String targetFilePath )
+    public ActiveTargetResponse setActiveTarget( String targetFilePath )
     {
         Objects.requireNonNull( targetFilePath, "Target file path cannot be null" );
 
@@ -130,38 +121,17 @@ public class PDEService
 
             if ( !file.exists() )
             {
-                return "Error: Target file not found in workspace: " + targetFilePath;
+                return failure( Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_FOUND,
+                    "Target file not found in workspace: " + targetFilePath ) );
             }
 
             ITargetPlatformService service = getTargetPlatformService();
-            ITargetHandle handle = service.getTarget( file );
-            ITargetDefinition definition = handle.getTargetDefinition();
-
-            CountDownLatch latch = new CountDownLatch( 1 );
-            String[] result = { null };
-
-            LoadTargetDefinitionJob.load( definition, new JobChangeAdapter()
-            {
-                @Override
-                public void done( IJobChangeEvent event )
-                {
-                    result[0] = event.getResult().isOK()
-                        ? "Target platform set to: " + definition.getName() + " (" + targetFilePath + ")"
-                        : "Error setting target platform: " + event.getResult().getMessage();
-                    latch.countDown();
-                }
-            } );
-
-            boolean completed = latch.await( 120, TimeUnit.SECONDS );
-            if ( !completed )
-            {
-                return "Error: Timed out waiting for target platform to load.";
-            }
-            return result[0];
+            return load( service.getTarget( file ), "load" );
         }
         catch ( Exception e )
         {
-            return "Error setting active target: " + e.getMessage();
+            return failure( Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                "Error setting active target: " + e.getMessage() ) );
         }
     }
 
@@ -169,7 +139,7 @@ public class PDEService
      * Reloads (resolves) the currently active target platform.
      * Should be called after modifying the active .target file.
      */
-    public String reloadTarget()
+    public ActiveTargetResponse reloadTarget()
     {
         try
         {
@@ -178,35 +148,111 @@ public class PDEService
 
             if ( handle == null )
             {
-                return "Error: No explicit target platform is set. Nothing to reload.";
+                // Not a failure. A workspace with no target file builds against the
+                // running platform - the same state getActiveTarget has always reported
+                // as ordinary. There is nothing to reload and nothing wrong.
+                return ActiveTargetResponse.runningPlatform();
             }
-
-            ITargetDefinition definition = handle.getTargetDefinition();
-            CountDownLatch latch = new CountDownLatch( 1 );
-            String[] result = { null };
-
-            LoadTargetDefinitionJob.load( definition, new JobChangeAdapter()
-            {
-                @Override
-                public void done( IJobChangeEvent event )
-                {
-                    result[0] = event.getResult().isOK()
-                        ? "Target platform reloaded: " + definition.getName()
-                        : "Error reloading target platform: " + event.getResult().getMessage();
-                    latch.countDown();
-                }
-            } );
-
-            boolean completed = latch.await( 120, TimeUnit.SECONDS );
-            if ( !completed )
-            {
-                return "Error: Timed out waiting for target platform to reload.";
-            }
-            return result[0];
+            return load( handle, "reload" );
         }
         catch ( Exception e )
         {
-            return "Error reloading target: " + e.getMessage();
+            return failure( Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                "Error reloading target: " + e.getMessage() ) );
+        }
+    }
+
+    /**
+     * Loads a target definition, waits for the job, and reports what is in force
+     * afterwards. Shared by set and reload, which differ only in where the handle comes
+     * from - and which previously each carried their own copy of the wait, the timeout
+     * and four error sentences.
+     *
+     * @param action the verb for the messages: "load" or "reload"
+     */
+    private ActiveTargetResponse load( ITargetHandle handle, String action ) throws CoreException
+    {
+        ITargetDefinition definition = handle.getTargetDefinition();
+        CountDownLatch latch = new CountDownLatch( 1 );
+        IStatus[] jobResult = new IStatus[1];
+
+        LoadTargetDefinitionJob.load( definition, new JobChangeAdapter()
+        {
+            @Override
+            public void done( IJobChangeEvent event )
+            {
+                jobResult[0] = event.getResult();
+                latch.countDown();
+            }
+        } );
+
+        boolean completed;
+        try
+        {
+            completed = latch.await( TARGET_LOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS );
+        }
+        catch ( InterruptedException e )
+        {
+            Thread.currentThread().interrupt();
+            return failure( Diagnostic.retryable( DiagnosticCode.INTERNAL_ERROR,
+                "Interrupted while waiting for the target platform to " + action + "." ) );
+        }
+
+        if ( !completed )
+        {
+            // We stopped waiting; the job did not stop working. Whatever it eventually
+            // does, what is in force at this moment is what the response describes.
+            return failure( Diagnostic.retryable( DiagnosticCode.OPERATION_TIMED_OUT,
+                "Timed out after " + TARGET_LOAD_TIMEOUT_SECONDS + "s waiting for the target platform to "
+                    + action + ". The load job may still be running." ) );
+        }
+        if ( jobResult[0] != null && !jobResult[0].isOK() )
+        {
+            return failure( Diagnostic.fatal( DiagnosticCode.DEPENDENCY_RESOLUTION_FAILED,
+                "The target platform failed to " + action + ": " + jobResult[0].getMessage() ) );
+        }
+        return describeWorkspaceTarget();
+    }
+
+    /** What the workspace is building against right now. */
+    private ActiveTargetResponse describeWorkspaceTarget() throws CoreException
+    {
+        ITargetPlatformService service = getTargetPlatformService();
+        ITargetHandle handle = service.getWorkspaceTargetHandle();
+        if ( handle == null )
+        {
+            return ActiveTargetResponse.runningPlatform();
+        }
+
+        ITargetDefinition definition = handle.getTargetDefinition();
+        boolean resolved = definition.isResolved();
+        Integer bundleCount = null;
+        if ( resolved )
+        {
+            // Only meaningful once resolved: 0 would say "the target contains nothing",
+            // which is a different and much worse answer than "not resolved yet".
+            var bundles = definition.getBundles();
+            bundleCount = bundles != null ? bundles.length : 0;
+        }
+        return ActiveTargetResponse.active( definition.getName(), handle.getMemento(), handle.exists(),
+            resolved, bundleCount );
+    }
+
+    /**
+     * A failure that still says which target platform is in force. That is the caller's
+     * next question after a set or reload did not happen, and the prose this replaces
+     * never answered it - nor, since it was returned rather than thrown, did it even
+     * reach the caller as a failure.
+     */
+    private ActiveTargetResponse failure( Diagnostic diagnostic )
+    {
+        try
+        {
+            return describeWorkspaceTarget().withFailure( diagnostic );
+        }
+        catch ( Exception e )
+        {
+            return ActiveTargetResponse.failed( diagnostic );
         }
     }
 
@@ -217,17 +263,17 @@ public class PDEService
     /**
      * Runs all JUnit Plug-in Tests in the given project.
      */
-    public String runJUnitPluginTests( String projectName, Integer timeout )
+    public TestRunResponse runJUnitPluginTests( String projectName, Integer timeout )
     {
         return runJUnitPluginTests( projectName, timeout, false, false, List.of() );
     }
 
-    public String runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage )
+    public TestRunResponse runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage )
     {
         return runJUnitPluginTests( projectName, timeout, withCoverage, false, List.of() );
     }
 
-    public String runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage,
+    public TestRunResponse runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage,
                                         boolean includeAllPlugins, List<String> additionalBundles )
     {
         return runJUnitPluginTests( projectName, timeout, withCoverage, includeAllPlugins, additionalBundles, null );
@@ -241,7 +287,7 @@ public class PDEService
      *                     reused (VM args, bundle selection, etc.) and only the project/
      *                     container targeting attributes are overridden
      */
-    public String runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage,
+    public TestRunResponse runJUnitPluginTests( String projectName, Integer timeout, boolean withCoverage,
                                         boolean includeAllPlugins, List<String> additionalBundles,
                                         String launcherName )
     {
@@ -250,38 +296,43 @@ public class PDEService
         {
             throw new IllegalArgumentException( "Project name cannot be empty" );
         }
-        if ( timeout == null || timeout <= 0 )
-        {
-            timeout = 300;
-        }
+        int waitSeconds = normalizeTimeout( timeout );
+        long startMillis = System.currentTimeMillis();
 
         try
         {
             IJavaProject javaProject = getJavaProject( projectName );
-            return launchJUnitPluginTests( javaProject, null, List.of(), timeout, withCoverage,
+            return launchJUnitPluginTests( javaProject, null, List.of(), waitSeconds, withCoverage,
                 includeAllPlugins, additionalBundles, launcherName );
+        }
+        catch ( ProjectNotFoundException e )
+        {
+            return TestRunResponse.notStarted( projectName, List.of(),
+                Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, e.getMessage() ), elapsed( startMillis ) );
         }
         catch ( IllegalArgumentException | CoreException e )
         {
-            return "Error running plug-in tests: " + e.getMessage();
+            return TestRunResponse.notStarted( projectName, List.of(),
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( startMillis ) );
         }
     }
 
     /**
      * Runs JUnit Plug-in Tests for a specific class.
      */
-    public String runJUnitPluginTestClass( String projectName, String className, Integer timeout )
+    public TestRunResponse runJUnitPluginTestClass( String projectName, String className, Integer timeout )
     {
         return runJUnitPluginTestClass( projectName, className, timeout, false, false, List.of() );
     }
 
-    public String runJUnitPluginTestClass( String projectName, String className, Integer timeout,
+    public TestRunResponse runJUnitPluginTestClass( String projectName, String className, Integer timeout,
                                             boolean withCoverage )
     {
         return runJUnitPluginTestClass( projectName, className, timeout, withCoverage, false, List.of() );
     }
 
-    public String runJUnitPluginTestClass( String projectName, String className, Integer timeout,
+    public TestRunResponse runJUnitPluginTestClass( String projectName, String className, Integer timeout,
                                             boolean withCoverage, boolean includeAllPlugins,
                                             List<String> additionalBundles )
     {
@@ -296,16 +347,14 @@ public class PDEService
      * @param launcherName optional saved launch config name; when set all its settings are
      *                     reused and only the project/class targeting attributes are overridden
      */
-    public String runJUnitPluginTestClass( String projectName, String className, Integer timeout,
+    public TestRunResponse runJUnitPluginTestClass( String projectName, String className, Integer timeout,
                                             boolean withCoverage, boolean includeAllPlugins,
                                             List<String> additionalBundles, String launcherName )
     {
         Objects.requireNonNull( projectName, "Project name cannot be null" );
         Objects.requireNonNull( className, "Class name cannot be null" );
-        if ( timeout == null || timeout <= 0 )
-        {
-            timeout = 300;
-        }
+        int waitSeconds = normalizeTimeout( timeout );
+        long startMillis = System.currentTimeMillis();
 
         try
         {
@@ -313,27 +362,37 @@ public class PDEService
             IType type = javaProject.findType( className );
             if ( type == null )
             {
-                return "Error: Class '" + className + "' not found in project '" + projectName + "'.";
+                return TestRunResponse.notStarted( projectName, List.of( className ),
+                    Diagnostic.fatal( DiagnosticCode.TEST_CLASS_NOT_FOUND,
+                        "Class '" + className + "' not found in project '" + projectName + "'." ),
+                    elapsed( startMillis ) );
             }
-            return launchJUnitPluginTests( javaProject, null, List.of( type ), timeout, withCoverage,
+            return launchJUnitPluginTests( javaProject, null, List.of( type ), waitSeconds, withCoverage,
                 includeAllPlugins, additionalBundles, launcherName );
+        }
+        catch ( ProjectNotFoundException e )
+        {
+            return TestRunResponse.notStarted( projectName, List.of( className ),
+                Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, e.getMessage() ), elapsed( startMillis ) );
         }
         catch ( IllegalArgumentException | CoreException e )
         {
-            return "Error running plug-in tests: " + e.getMessage();
+            return TestRunResponse.notStarted( projectName, List.of( className ),
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( startMillis ) );
         }
     }
 
     /**
      * Runs selected JUnit Plug-in Test classes in a single PDE launch.
      */
-    public String runJUnitPluginTestClasses( String projectName, List<String> classNames,
+    public TestRunResponse runJUnitPluginTestClasses( String projectName, List<String> classNames,
                                              Integer timeout )
     {
         return runJUnitPluginTestClasses( projectName, classNames, timeout, false, List.of() );
     }
 
-    public String runJUnitPluginTestClasses( String projectName, List<String> classNames,
+    public TestRunResponse runJUnitPluginTestClasses( String projectName, List<String> classNames,
                                              Integer timeout, boolean includeAllPlugins,
                                              List<String> additionalBundles )
     {
@@ -347,7 +406,7 @@ public class PDEService
      *
      * @param launcherName optional saved launch config name
      */
-    public String runJUnitPluginTestClasses( String projectName, List<String> classNames,
+    public TestRunResponse runJUnitPluginTestClasses( String projectName, List<String> classNames,
                                              Integer timeout, boolean includeAllPlugins,
                                              List<String> additionalBundles, String launcherName )
     {
@@ -361,10 +420,8 @@ public class PDEService
         {
             throw new IllegalArgumentException( "At least one class name is required" );
         }
-        if ( timeout == null || timeout <= 0 )
-        {
-            timeout = 300;
-        }
+        int waitSeconds = normalizeTimeout( timeout );
+        long startMillis = System.currentTimeMillis();
 
         List<String> normalizedClassNames = new ArrayList<>();
         for ( String className : classNames )
@@ -400,16 +457,26 @@ public class PDEService
             }
             if ( !missingClassNames.isEmpty() )
             {
-                return "Error: Test classes not found in project '" + projectName + "': "
-                    + String.join( ", ", missingClassNames );
+                return TestRunResponse.notStarted( projectName, normalizedClassNames,
+                    Diagnostic.fatal( DiagnosticCode.TEST_CLASS_NOT_FOUND,
+                        "Test classes not found in project '" + projectName + "': "
+                            + String.join( ", ", missingClassNames ) ),
+                    elapsed( startMillis ) );
             }
 
-            return launchJUnitPluginTests( javaProject, null, testClasses, timeout, false,
+            return launchJUnitPluginTests( javaProject, null, testClasses, waitSeconds, false,
                 includeAllPlugins, additionalBundles, launcherName );
+        }
+        catch ( ProjectNotFoundException e )
+        {
+            return TestRunResponse.notStarted( projectName, normalizedClassNames,
+                Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, e.getMessage() ), elapsed( startMillis ) );
         }
         catch ( IllegalArgumentException | CoreException e )
         {
-            return "Error running plug-in tests: " + e.getMessage();
+            return TestRunResponse.notStarted( projectName, normalizedClassNames,
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( startMillis ) );
         }
     }
 
@@ -417,19 +484,19 @@ public class PDEService
     /**
      * Runs JUnit Plug-in Tests for all test classes in a specific package.
      */
-    public String runJUnitPluginTestPackage( String projectName, String packageName,
+    public TestRunResponse runJUnitPluginTestPackage( String projectName, String packageName,
                                               Integer timeout )
     {
         return runJUnitPluginTestPackage( projectName, packageName, timeout, false, false, List.of() );
     }
 
-    public String runJUnitPluginTestPackage( String projectName, String packageName,
+    public TestRunResponse runJUnitPluginTestPackage( String projectName, String packageName,
                                               Integer timeout, boolean withCoverage )
     {
         return runJUnitPluginTestPackage( projectName, packageName, timeout, withCoverage, false, List.of() );
     }
 
-    public String runJUnitPluginTestPackage( String projectName, String packageName,
+    public TestRunResponse runJUnitPluginTestPackage( String projectName, String packageName,
                                               Integer timeout, boolean withCoverage,
                                               boolean includeAllPlugins, List<String> additionalBundles )
     {
@@ -444,7 +511,7 @@ public class PDEService
      * @param launcherName optional saved launch config name; when set all its settings are reused
      *                     and only the project/package targeting attributes are overridden
      */
-    public String runJUnitPluginTestPackage( String projectName, String packageName,
+    public TestRunResponse runJUnitPluginTestPackage( String projectName, String packageName,
                                               Integer timeout, boolean withCoverage,
                                               boolean includeAllPlugins, List<String> additionalBundles,
                                               String launcherName )
@@ -459,10 +526,8 @@ public class PDEService
         {
             throw new IllegalArgumentException( "Package name cannot be empty" );
         }
-        if ( timeout == null || timeout <= 0 )
-        {
-            timeout = 300;
-        }
+        int waitSeconds = normalizeTimeout( timeout );
+        long startMillis = System.currentTimeMillis();
 
         try
         {
@@ -470,14 +535,24 @@ public class PDEService
             IPackageFragment pkg = findPackage( javaProject, packageName );
             if ( pkg == null )
             {
-                return "Error: Package '" + packageName + "' not found in project '" + projectName + "'.";
+                return TestRunResponse.notStarted( projectName, List.of(),
+                    Diagnostic.fatal( DiagnosticCode.TEST_PACKAGE_NOT_FOUND,
+                        "Package '" + packageName + "' not found in project '" + projectName + "'." ),
+                    elapsed( startMillis ) );
             }
-            return launchJUnitPluginTests( javaProject, pkg, List.of(), timeout, withCoverage,
+            return launchJUnitPluginTests( javaProject, pkg, List.of(), waitSeconds, withCoverage,
                 includeAllPlugins, additionalBundles, launcherName );
+        }
+        catch ( ProjectNotFoundException e )
+        {
+            return TestRunResponse.notStarted( projectName, List.of(),
+                Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, e.getMessage() ), elapsed( startMillis ) );
         }
         catch ( IllegalArgumentException | CoreException e )
         {
-            return "Error running plug-in tests: " + e.getMessage();
+            return TestRunResponse.notStarted( projectName, List.of(),
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( startMillis ) );
         }
     }
 
@@ -492,7 +567,14 @@ public class PDEService
      */
     private static final int MAX_TEST_RUN_MINUTES = 120;
 
-    private String launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
+    /**
+     * JDT's own test-container attribute. Not exposed as API by
+     * {@code org.eclipse.jdt.junit}, so it is a string literal wherever it is used - once,
+     * here.
+     */
+    private static final String JDT_JUNIT_CONTAINER = "org.eclipse.jdt.junit.CONTAINER";
+
+    private TestRunResponse launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
                                             List<IType> testClasses, int timeout, boolean withCoverage,
                                             boolean includeAllPlugins, List<String> additionalBundles )
     {
@@ -504,7 +586,7 @@ public class PDEService
      * Core PDE JUnit launch. When {@code launcherName} is non-null, that saved configuration is
      * used as a base and only the test targeting attributes are overridden.
      */
-    private String launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
+    private TestRunResponse launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
                                             List<IType> testClasses, int timeout, boolean withCoverage,
                                             boolean includeAllPlugins, List<String> additionalBundles,
                                             String launcherName )
@@ -513,6 +595,14 @@ public class PDEService
         UnitTestService.TestRunResult[] testRunResults = new UnitTestService.TestRunResult[1];
         Optional<Operation> operation = OperationContext.current();
         AtomicInteger finishedTests = new AtomicInteger();
+        String projectName = javaProject.getProject().getName();
+        List<String> requestedClasses = testClasses.stream()
+            .map( IType::getFullyQualifiedName )
+            .toList();
+        // Wall clock for the whole operation. Kept apart from launchStartTime below,
+        // which is the baseline for matching a coverage file by modification time and
+        // must not be moved earlier or an older .exec file starts matching.
+        long runStartMillis = System.currentTimeMillis();
 
         TestRunListener listener = new TestRunListener()
         {
@@ -522,13 +612,16 @@ public class PDEService
             public void sessionStarted( ITestRunSession session )
             {
                 currentRun = new UnitTestService.TestRunResult( session.getTestRunName() );
+                // Published as soon as the session exists, not when it finishes, so a run
+                // that is cancelled or times out still reports the tests that did run.
+                // Null therefore means "the session never started".
+                testRunResults[0] = currentRun;
                 operation.ifPresent( op -> op.setProgress( "test session started" ) );
             }
 
             @Override
             public void sessionFinished( ITestRunSession session )
             {
-                testRunResults[0] = currentRun;
                 latch.countDown();
             }
 
@@ -539,19 +632,18 @@ public class PDEService
                 {
                     String clazz = testCaseElement.getTestClassName();
                     String testName = testCaseElement.getTestMethodName();
-                    String status = testCaseElement.getTestResult( true ).toString();
-                    String message = testCaseElement.getFailureTrace() != null
-                        ? testCaseElement.getFailureTrace().getTrace() : "";
-                    double time = testCaseElement.getElapsedTimeInSeconds();
-                    currentRun.addTestResult( new UnitTestService.TestResult( clazz, testName, status, message, time ) );
+                    currentRun.addTestResult(
+                        UnitTestService.collectTestResult( javaProject, testCaseElement ) );
                     int count = finishedTests.incrementAndGet();
                     operation.ifPresent( op -> {
                         op.setProgress( count + " tests finished; last: " + clazz + "#" + testName );
-                        // Publish typed intermediate results so getOperationStatus
-                        // can surface pass/fail counts and detailed test listing
-                        // while the run is still going.
-                        op.setIntermediateResult( "summary", currentRun.toSummary() );
-                        op.setIntermediateResult( "results", currentRun.toResults() );
+                        // Publish structured intermediate results so getOperationStatus can
+                        // surface pass/fail counts and the failures so far while the run is
+                        // still going. RUNNING exists for exactly this snapshot.
+                        TestRunResponse live = currentRun.snapshot( RunStatus.RUNNING, projectName,
+                            requestedClasses, null, List.of(), elapsed( runStartMillis ) );
+                        op.setIntermediateResult( "summary", McpJson.toJson( live.summary() ) );
+                        op.setIntermediateResult( "results", McpJson.toJson( live ) );
                     } );
                 }
             }
@@ -571,7 +663,10 @@ public class PDEService
                 if ( base == null )
                 {
                     JUnitCore.removeTestRunListener( listener );
-                    return "Error: Launch configuration not found: " + launcherName;
+                    return TestRunResponse.notStarted( projectName, requestedClasses,
+                        Diagnostic.fatal( DiagnosticCode.LAUNCH_CONFIGURATION_NOT_FOUND,
+                            "Launch configuration not found: " + launcherName ),
+                        elapsed( runStartMillis ) );
                 }
                 workingCopy = base.getWorkingCopy();
             }
@@ -586,8 +681,11 @@ public class PDEService
                 if ( type == null )
                 {
                     JUnitCore.removeTestRunListener( listener );
-                    return "Error: PDE JUnit Plug-in Test launch configuration type '" + launchTypeId
-                        + "' not found. Ensure the required PDE launcher is available.";
+                    return TestRunResponse.notStarted( projectName, requestedClasses,
+                        Diagnostic.fatal( DiagnosticCode.PDE_LAUNCH_TYPE_MISSING,
+                            "PDE JUnit Plug-in Test launch configuration type '" + launchTypeId
+                                + "' not found. Ensure the required PDE launcher is available." ),
+                        elapsed( runStartMillis ) );
                 }
 
                 String launchName = buildLaunchName( javaProject, packageFragment, testClasses );
@@ -603,48 +701,7 @@ public class PDEService
             }
 
             // Always override targeting attributes — everything else from the base config is kept
-            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_PROJECT_NAME,
-                javaProject.getElementName() );
-
-            boolean selectedClassLaunch = testClasses.size() > 1;
-            if ( selectedClassLaunch )
-            {
-                List<String> classNames = testClasses.stream()
-                    .map( IType::getFullyQualifiedName )
-                    .toList();
-                workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES, classNames );
-                workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME, "" );
-                workingCopy.setAttribute( "org.eclipse.jdt.junit.CONTAINER", "" );
-            }
-            else if ( !testClasses.isEmpty() )
-            {
-                workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
-                    List.<String>of() );
-                workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME,
-                    testClasses.get( 0 ).getFullyQualifiedName() );
-                workingCopy.setAttribute( "org.eclipse.jdt.junit.CONTAINER", "" );
-            }
-            else if ( packageFragment != null )
-            {
-                // Package scope: set CONTAINER to the package's handle identifier.
-                // The JDT JUnit launcher resolves CONTAINER via JavaCore.create(handleId),
-                // which works for IPackageFragment handles as well as project handles.
-                workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
-                    List.<String>of() );
-                workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME, "" );
-                workingCopy.setAttribute( "org.eclipse.jdt.junit.CONTAINER",
-                    packageFragment.getHandleIdentifier() );
-            }
-            else
-            {
-                workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
-                    List.<String>of() );
-                workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME, "" );
-                // CONTAINER must be the Java element handle identifier for the project:
-                // "=<projectName>" is the format JDT JUnit launcher expects
-                workingCopy.setAttribute( "org.eclipse.jdt.junit.CONTAINER",
-                    javaProject.getHandleIdentifier() );
-            }
+            applyTestTargeting( workingCopy, javaProject, packageFragment, testClasses );
 
             // Only set TEST_KIND and workspace/bundle config when not using a named launcher
             if ( launcherName == null || launcherName.isBlank() )
@@ -748,15 +805,26 @@ public class PDEService
 
             if ( launchError[0] != null )
             {
-                return "Error launching plug-in tests: " + launchError[0].getMessage();
+                return TestRunResponse.notStarted( projectName, requestedClasses,
+                    Diagnostic.fatal( DiagnosticCode.DEPENDENCY_RESOLUTION_FAILED,
+                        "Error launching plug-in tests: " + launchError[0].getMessage() ),
+                    elapsed( runStartMillis ) );
             }
             if ( !completed )
             {
-                return "Error: the test run did not report results in time.";
+                // Whatever was collected before the deadline is still reported: a run
+                // that timed out after 30 of 40 tests knows more than "it timed out".
+                return abandoned( testRunResults[0], RunStatus.TIMED_OUT, projectName, requestedClasses,
+                    Diagnostic.retryable( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
+                        "The test run did not report results in time." ),
+                    runStartMillis );
             }
             if ( testRunResults[0] == null )
             {
-                return "Error: No test results collected. The test run may have failed to start.";
+                return TestRunResponse.notStarted( projectName, requestedClasses,
+                    Diagnostic.fatal( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
+                        "No test results collected. The test run may have failed to start." ),
+                    elapsed( runStartMillis ) );
             }
 
             // The test session can finish just before the workbench process releases
@@ -764,31 +832,167 @@ public class PDEService
             // selection can safely reuse its workspace.
             waitForLaunchTermination( launchRef[0] );
 
-            String results = testRunResults[0].toString();
-
-            if ( useCoverage )
+            CoverageResult coverage = null;
+            if ( withCoverage && !useCoverage )
+            {
+                coverage = CoverageResult.unavailable();
+            }
+            else if ( useCoverage )
             {
                 String execFile = coverageService.waitForLatestCoverageFile( launchStartTime, 10000 );
-                results += coverageService.formatCoverageInfo( execFile, javaProject.getProject().getName() );
+                coverage = CoverageResult.of( execFile,
+                    coverageService.formatCoverageInfo( execFile, projectName ) );
             }
 
-            return results;
+            List<Diagnostic> diagnostics = coverage != null && !coverage.available()
+                ? List.of( Diagnostic.fatal( DiagnosticCode.COVERAGE_UNAVAILABLE,
+                    "Coverage was requested but no coverage tooling (EclEmma/JaCoCo) is installed." ) )
+                : List.of();
+
+            TestSummary counts = testRunResults[0].summary();
+            return testRunResults[0].snapshot( TestRunResponse.terminalStatus( counts ), projectName,
+                requestedClasses, coverage, diagnostics, elapsed( runStartMillis ) );
         }
         catch ( InterruptedException e )
         {
             // cancelOperation interrupts this thread; the test instance itself is
             // terminated by the operation's cancel hook.
             Thread.currentThread().interrupt();
-            return "Test run cancelled.";
+            return abandoned( testRunResults[0], RunStatus.CANCELLED, projectName, requestedClasses,
+                Diagnostic.fatal( DiagnosticCode.TEST_RESULTS_NOT_REPORTED, "Test run cancelled." ),
+                runStartMillis );
         }
         catch ( Exception e )
         {
             logger.error( "Error running plug-in tests", e );
-            return "Error running plug-in tests: " + e.getMessage();
+            return TestRunResponse.notStarted( projectName, requestedClasses,
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                    "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( runStartMillis ) );
         }
         finally
         {
             JUnitCore.removeTestRunListener( listener );
+        }
+    }
+
+    /**
+     * Writes the attributes that say <em>what to run</em> onto a launch configuration.
+     * Everything else - bundles, workspace location, VM arguments - is left as the base
+     * configuration had it.
+     * <p>
+     * Extracted from the launch so that its regression test can assert on the
+     * configuration the product builds rather than on a second copy of these rules,
+     * which is how the selected-classes defect below survived three attempts: the test
+     * exercised {@code evaluateTests} in isolation, and the defect was in what JDT does
+     * <em>before</em> calling it.
+     */
+    static void applyTestTargeting( ILaunchConfigurationWorkingCopy workingCopy, IJavaProject javaProject,
+                                    IPackageFragment packageFragment, List<IType> testClasses )
+    {
+        workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_PROJECT_NAME,
+            javaProject.getElementName() );
+
+        if ( testClasses.size() > 1 )
+        {
+            List<String> classNames = testClasses.stream()
+                .map( IType::getFullyQualifiedName )
+                .toList();
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES, classNames );
+
+            // JDT resolves a test target from the configuration BEFORE it asks the
+            // delegate. For a JUnit 5 or 6 test kind,
+            // JUnitLaunchConfigurationDelegate.getVMRunnerConfiguration calls the private
+            // final getTestTarget first, which reads CONTAINER and then MAIN_TYPE_NAME and
+            // aborts with "The input type of the launch configuration does not exist" when
+            // both are blank. Blanking both is what this branch used to do, which is why
+            // the comma-separated className form never ran.
+            //
+            // The first selected class is named here only to give that resolution
+            // something that exists. It must be a type, not the project or package
+            // handle: a container-shaped target is taken as the answer outright and
+            // evaluateTests is never called, so CONTAINER here would silently run every
+            // test in the project. A type is not a container, so JDT goes on to call
+            // evaluateTests - and SelectedJUnitPluginLaunchDelegate widens it back to the
+            // whole list.
+            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME,
+                testClasses.get( 0 ).getFullyQualifiedName() );
+            workingCopy.setAttribute( JDT_JUNIT_CONTAINER, "" );
+        }
+        else if ( !testClasses.isEmpty() )
+        {
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
+                List.<String>of() );
+            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME,
+                testClasses.get( 0 ).getFullyQualifiedName() );
+            workingCopy.setAttribute( JDT_JUNIT_CONTAINER, "" );
+        }
+        else if ( packageFragment != null )
+        {
+            // Package scope: set CONTAINER to the package's handle identifier.
+            // The JDT JUnit launcher resolves CONTAINER via JavaCore.create(handleId),
+            // which works for IPackageFragment handles as well as project handles.
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
+                List.<String>of() );
+            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME, "" );
+            workingCopy.setAttribute( JDT_JUNIT_CONTAINER, packageFragment.getHandleIdentifier() );
+        }
+        else
+        {
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
+                List.<String>of() );
+            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME, "" );
+            // CONTAINER must be the Java element handle identifier for the project:
+            // "=<projectName>" is the format JDT JUnit launcher expects
+            workingCopy.setAttribute( JDT_JUNIT_CONTAINER, javaProject.getHandleIdentifier() );
+        }
+    }
+
+    /**
+     * A run that ended without the session reporting - cancelled or timed out - keeping
+     * whatever the accumulator already held. Discarding it would throw away the results
+     * of every test that did finish, which is usually most of them.
+     */
+    private TestRunResponse abandoned( UnitTestService.TestRunResult collected, RunStatus status,
+            String projectName, List<String> requestedClasses, Diagnostic diagnostic, long runStartMillis )
+    {
+        if ( collected == null )
+        {
+            return TestRunResponse.aborted( status, projectName, requestedClasses, diagnostic,
+                elapsed( runStartMillis ) );
+        }
+        TestRunResponse partial = collected.snapshot( status, projectName, requestedClasses, null,
+            List.of( diagnostic ), elapsed( runStartMillis ) );
+        return new TestRunResponse( partial.status(), partial.projectName(), partial.requestedClasses(),
+            partial.summary(), partial.failedTests(), partial.skippedTests(), partial.coverage(),
+            partial.diagnostics(), diagnostic.message() + " " + partial.summaryText(),
+            partial.durationMillis() );
+    }
+
+    /** The caller's timeout, defaulted. Zero or negative means "use the default". */
+    private static int normalizeTimeout( Integer timeout )
+    {
+        return timeout == null || timeout <= 0 ? 300 : timeout;
+    }
+
+    private static long elapsed( long startMillis )
+    {
+        return System.currentTimeMillis() - startMillis;
+    }
+
+    /**
+     * No open project of that name. A subtype of {@link IllegalArgumentException} so
+     * that the existing contract - an invalid request is an exception - is unchanged,
+     * while the run methods can still tell this apart from every other bad argument and
+     * report it as a {@code PROJECT_NOT_FOUND} diagnostic.
+     */
+    private static final class ProjectNotFoundException extends IllegalArgumentException
+    {
+        private static final long serialVersionUID = 1L;
+
+        ProjectNotFoundException( String message )
+        {
+            super( message );
         }
     }
 
@@ -860,7 +1064,7 @@ public class PDEService
         var project = workspace.getRoot().getProject( projectName );
         if ( !project.exists() )
         {
-            throw new IllegalArgumentException( "Project not found: " + projectName );
+            throw new ProjectNotFoundException( "Project not found: " + projectName );
         }
         return JavaCore.create( project );
     }

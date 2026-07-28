@@ -1,12 +1,16 @@
 
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.e4.core.di.annotations.Creatable;
+import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
@@ -18,9 +22,15 @@ import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.texteditor.ITextEditor;
 
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.resources.ContentRange;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
-import com.github.gradusnikov.eclipse.assistai.tools.ResourceFormatter;
+import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
 import com.github.gradusnikov.eclipse.assistai.tools.UISynchronizeCallable;
 
 import jakarta.inject.Inject;
@@ -55,103 +65,161 @@ public class EditorService
     
     
     /**
-     * Gets information about the currently active file in the Eclipse editor.
-     * 
-     * @return A formatted string containing file information and content
+     * Reads the file the user is currently looking at.
+     * <p>
+     * The content is exact. It used to be wrapped in a {@code # Currently Opened File}
+     * heading and a {@code === PROJECT: … FILE: … ===} banner with every line
+     * zero-padded and numbered, and that decorated text was what went into the
+     * resource cache - so the same file cached from a chat attachment and cached from
+     * here had two different shapes. The cache stores exact content now; the banner
+     * only repeated the uri, name and version the &lt;resources&gt; element already
+     * carries as attributes.
+     * <p>
+     * Having no editor open is a state of the workbench, not a failure of this call,
+     * so it comes back as a FAILED result carrying a code rather than as an exception
+     * or a string beginning with "Error:".
      */
-    public String getCurrentlyOpenedFileContent()
-    {
-        return getCurrentlyOpenedFileContentWithResource().content();
-    }
-    
-    /**
-     * Gets information about the currently active file with resource metadata for caching.
-     * 
-     * @return ResourceToolResult containing file content and descriptor
-     */
-    public ResourceToolResult getCurrentlyOpenedFileContentWithResource()
+    public ResourceReadResult readCurrentlyOpenedFile()
     {
         return uiSync.syncCall( () -> {
-	        try 
-	        {
-	            IFile file = getCurrentlyOpenedFile().orElseThrow( () ->  new RuntimeException("No active editor found or editor input not available.") );
-	            
-	            final StringBuilder result = new StringBuilder();
-	            result.append("# Currently Opened File:\n\n");
-                ResourceFormatter resourceFormatter = new ResourceFormatter(file);
-                result.append(resourceFormatter.formatFile());
-                
-                return ResourceToolResult.fromFile(file, result.toString(), "getCurrentlyOpenedFile");
-	        } 
-	        catch (Exception e)
-	        {
-	        	return ResourceToolResult.transientResult(
-	        	    "Error: " + e.getMessage(), 
-	        	    "getCurrentlyOpenedFile"
-	        	);
-	        }
+            Optional<IFile> opened = getCurrentlyOpenedFile();
+            if ( opened.isEmpty() )
+            {
+                return ResourceReadResult.failed( null, null, Diagnostic.fatal(
+                        DiagnosticCode.RESOURCE_NOT_FOUND,
+                        "No workspace file is open in the active editor, or the open file is excluded"
+                                + " from AI processing by .aiignore." ) );
+            }
+
+            IFile file = opened.get();
+            try
+            {
+                List<String> lines = ResourceUtilities.readFileLines( file );
+                StringBuilder content = new StringBuilder();
+                for ( String line : lines )
+                {
+                    content.append( line ).append( "\n" );
+                }
+
+                return new ResourceReadResult(
+                        ResourceReadResult.ReadStatus.OK,
+                        ResourceDescriptor.fromWorkspaceFile( file, "getCurrentlyOpenedFile" ).uri().toString(),
+                        file.getProject().getName(),
+                        file.getProjectRelativePath().toString(),
+                        ResourceUtilities.getLanguageForFile( file ),
+                        ResourceVersion.of( file ),
+                        new ContentRange( 1, 1, Math.max( 1, lines.size() ), 1 ),
+                        lines.size(),
+                        content.toString(),
+                        SourceOrigin.WORKSPACE_SOURCE,
+                        false,
+                        false,
+                        List.of(),
+                        Diagnostic.none() );
+            }
+            catch ( IOException | CoreException e )
+            {
+                logger.error( "Could not read the open editor's file", e );
+                return ResourceReadResult.failed( file.getProject().getName(),
+                        file.getProjectRelativePath().toString(),
+                        Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error reading file: " + e.getMessage() ) );
+            }
         });
     }
 
     /**
-     * Gets the currently selected text or lines in the active editor.
-     * 
-     * @return A formatted string containing the selected text
+     * Reads what the user has selected in the active editor.
+     * <p>
+     * A selection is a range read of the open file, so it is the same
+     * {@link ResourceReadResult} its sibling {@link #readCurrentlyOpenedFile()}
+     * returns, with {@code returnedRange} carrying the start and end - line
+     * <em>and</em> column, which the old rendering could not express at all.
+     * <p>
+     * That field replaces the arithmetic that produced two off-by-one errors at once:
+     * 1-based line numbers were handed to a formatter whose contract was 0-based and
+     * which then printed {@code i + 1}, so the excerpt was shifted by one line and
+     * labelled with numbers shifted by one again - and a selection touching the file's
+     * last line made {@code to == lines.size()} and threw
+     * {@code IllegalArgumentException("Illegal line range")} instead of returning
+     * anything.
+     * <p>
+     * Having no editor open is a state of the workbench, and having nothing selected is
+     * an ordinary answer: the first is a FAILED result carrying a code, the second an
+     * OK result whose {@code returnedRange} is zero-width and whose content is empty.
+     * Neither is an exception, which is what the caret case used to be.
      */
-    public  String getEditorSelection()
+    public ResourceReadResult readEditorSelection()
     {
-        return uiSync.syncCall( () ->{
-            final StringBuilder result = new StringBuilder();
-            try 
+        return uiSync.syncCall( () -> {
+            Optional<IEditorPart> editor = getActiveEditor();
+            if ( editor.isEmpty() || !( editor.get() instanceof ITextEditor textEditor ) )
             {
-                IEditorPart editor = getActiveEditor().orElseThrow( () ->  new Exception("No active editor found. Please open a file.") );
-                
-                // Get the selection from the editor
-                if (!(editor instanceof ITextEditor textEditor)) 
-                {
-                    throw new RuntimeException("The current selection is not a text selection.");
-                }
-                ISelection selection = textEditor.getSelectionProvider().getSelection();
-                
-                if (selection.isEmpty()) 
-                {
-                    result.append("No text is currently selected in the editor.");
-                    return result.toString();
-                }
-                if (!(selection instanceof ITextSelection textSelection)) 
-                {
-                    throw new RuntimeException("The current selection is not a text selection.");
-                }
-                
-                // Get the selected text
-                String selectedText = textSelection.getText();
-                
-                result.append("# Selected Text in Editor\n\n");
-                
-                // Selection details
-                int startLine = textSelection.getStartLine() + 1; // 1-based
-                int endLine   = textSelection.getEndLine() + 1; // 1-based
-                int length    = textSelection.getLength();
-
-                IFile file = getCurrentlyOpenedFile().orElseThrow( () ->  new RuntimeException("No active editor found or editor input not available.") );
-
-        		result.append( "Selection from line: " + startLine );
-        		result.append(" to: " + endLine );
-        		result.append(" length: " + length );
-        		result.append("\n");
-        		result.append( "=== BEGIN selected ===\n");
-        		result.append( selectedText );
-        		result.append( selectedText.endsWith("\n") ? "" : "\n" );
-        		result.append( "=== END selected text ===");
-        		result.append("\n");
-            	ResourceFormatter resourceFormatter = new ResourceFormatter(file);
-            	result.append(resourceFormatter.format(startLine, endLine));
+                return ResourceReadResult.failed( null, null, Diagnostic.fatal(
+                        DiagnosticCode.RESOURCE_NOT_FOUND,
+                        "No text editor is active, so there is no selection to read." ) );
             }
-            catch (Exception e)
+
+            Optional<IFile> opened = getCurrentlyOpenedFile();
+            if ( opened.isEmpty() )
             {
-            	throw new RuntimeException(e);
+                return ResourceReadResult.failed( null, null, Diagnostic.fatal(
+                        DiagnosticCode.RESOURCE_NOT_FOUND,
+                        "No workspace file is open in the active editor, or the open file is excluded"
+                                + " from AI processing by .aiignore." ) );
             }
-            return result.toString();
+
+            IFile file = opened.get();
+            IDocument document = textEditor.getDocumentProvider().getDocument( textEditor.getEditorInput() );
+            ISelection selection = textEditor.getSelectionProvider().getSelection();
+
+            if ( document == null || !( selection instanceof ITextSelection textSelection ) )
+            {
+                return ResourceReadResult.failed( file.getProject().getName(),
+                        file.getProjectRelativePath().toString(), Diagnostic.fatal(
+                                DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                                "The active editor holds no text document or no text selection." ) );
+            }
+
+            try
+            {
+                // Clamped rather than trusted: an editor with nothing selected reports
+                // offset -1, and the caret case must produce a zero-width range rather
+                // than a BadLocationException.
+                int offset = Math.min( Math.max( 0, textSelection.getOffset() ), document.getLength() );
+                int length = Math.max( 0, Math.min( textSelection.getLength(), document.getLength() - offset ) );
+
+                ContentRange range = ContentRange.of( document, offset, length );
+                String selectedText = document.get( offset, length );
+                int totalLines = document.getNumberOfLines();
+                boolean wholeFile = length == document.getLength();
+
+                return new ResourceReadResult(
+                        wholeFile ? ResourceReadResult.ReadStatus.OK : ResourceReadResult.ReadStatus.PARTIAL,
+                        ResourceDescriptor.fromWorkspaceFile( file, "getEditorSelection" ).uri().toString(),
+                        file.getProject().getName(),
+                        file.getProjectRelativePath().toString(),
+                        ResourceUtilities.getLanguageForFile( file ),
+                        ResourceVersion.of( file ),
+                        range,
+                        totalLines,
+                        selectedText,
+                        SourceOrigin.WORKSPACE_SOURCE,
+                        false,
+                        // The selection came back whole. "truncated" means less was
+                        // returned than was asked for, not "this is a subset of the
+                        // file" - status = PARTIAL already says that.
+                        false,
+                        List.of(),
+                        Diagnostic.none() );
+            }
+            catch ( BadLocationException e )
+            {
+                logger.error( "Could not resolve the editor selection", e );
+                return ResourceReadResult.failed( file.getProject().getName(),
+                        file.getProjectRelativePath().toString(), Diagnostic.fatal(
+                                DiagnosticCode.INVALID_RANGE,
+                                "The editor selection does not resolve against the document: " + e.getMessage() ) );
+            }
         } );
     }
     

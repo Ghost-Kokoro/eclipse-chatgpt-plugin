@@ -1,5 +1,9 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -14,6 +18,12 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IOrdinaryClassFile;
 import org.eclipse.jdt.core.IType;
 import org.junit.jupiter.api.Test;
+
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
+
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
 
 public class ClassFileDecompilerPDETest
 {
@@ -75,10 +85,13 @@ public class ClassFileDecompilerPDETest
             return defaultValue( method.getReturnType() );
         } ) );
 
-        String source = service.getSource( "example.DecompilerFixture" );
+        ResourceReadResult result = service.getSourceWithResource( "example.DecompilerFixture" );
 
-        assertTrue( source.contains( "Decompiled by Vineflower" ) );
-        assertTrue( source.contains( "class DecompilerFixture" ) );
+        assertTrue( result.content().contains( "Decompiled by Vineflower" ) );
+        assertEquals( SourceOrigin.DECOMPILED_CLASS, result.origin(),
+                "a rendering of bytecode must not be offered as something to edit" );
+        assertFalse( result.isEditable() );
+        assertTrue( result.content().contains( "class DecompilerFixture" ) );
     }
 
     @Test
@@ -110,9 +123,12 @@ public class ClassFileDecompilerPDETest
             }
         };
 
-        String source = service.getSource( "example.AttachedLibraryClass" );
+        ResourceReadResult result = service.getSourceWithResource( "example.AttachedLibraryClass" );
 
-        assertTrue( source.equals( attachedSource ) );
+        assertEquals( attachedSource, result.content() );
+        assertEquals( SourceOrigin.ATTACHED_SOURCE, result.origin(),
+                "attached library source is real source, but still not writable" );
+        assertFalse( result.isEditable() );
     }
 
     private byte[] readFixtureBytecode() throws IOException

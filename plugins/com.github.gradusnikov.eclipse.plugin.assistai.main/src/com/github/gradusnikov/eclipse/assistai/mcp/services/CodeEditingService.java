@@ -1,20 +1,23 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Set;
 import java.util.Deque;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.Map;
 import java.util.Objects;
@@ -59,13 +62,10 @@ import org.eclipse.jface.bindings.keys.KeySequence;
 import org.eclipse.jface.bindings.keys.KeyStroke;
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.Document;
+import org.eclipse.jface.text.FindReplaceDocumentAdapter;
 import org.eclipse.jface.text.IDocument;
-import org.eclipse.jgit.diff.DiffFormatter;
-import org.eclipse.jgit.diff.EditList;
-import org.eclipse.jgit.diff.HistogramDiff;
-import org.eclipse.jgit.diff.RawText;
-import org.eclipse.jgit.diff.RawTextComparator;
 import org.eclipse.ltk.core.refactoring.Change;
+import org.eclipse.ltk.core.refactoring.CompositeChange;
 import org.eclipse.swt.SWT;
 import org.eclipse.ltk.core.refactoring.Refactoring;
 import org.eclipse.ltk.core.refactoring.RefactoringContribution;
@@ -86,9 +86,35 @@ import org.eclipse.ui.handlers.IHandlerService;
 import org.eclipse.ui.keys.IBindingService;
 import org.eclipse.ui.part.FileEditorInput;
 import org.eclipse.ui.texteditor.ITextEditor;
+import org.eclipse.jface.text.BadLocationException;
+import org.eclipse.jface.text.Document;
+import org.eclipse.jface.text.FindReplaceDocumentAdapter;
+import org.eclipse.jface.text.IDocument;
+import org.eclipse.jface.text.IRegion;
+import org.eclipse.text.edits.MalformedTreeException;
+import org.eclipse.text.edits.MultiTextEdit;
+import org.eclipse.text.edits.ReplaceEdit;
 
 import com.github.gradusnikov.eclipse.assistai.completion.CompletionContext;
+import com.github.gradusnikov.eclipse.assistai.resources.ContentRange;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.LineDelimiterPreference;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.LineDelimiterPreference;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.AffectedResource;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.AppliedEdit;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.ChangeKind;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.EditStatus;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.EditorPosition;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.EditorReveal;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult.WorkspaceSync;
+
+import com.github.gradusnikov.eclipse.assistai.resources.Occurrence;
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceCache;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.TextEditRequest;
+import com.github.gradusnikov.eclipse.assistai.tools.UnifiedDiffs;
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
 import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
 
@@ -112,21 +138,16 @@ public class CodeEditingService
     @Inject
     ResourceCache       resourceCache;
 
-    private static final int MAX_EDIT_BACKUPS = 20;
-
-    private final Map<IPath, Deque<byte[]>> editBackups = new ConcurrentHashMap<>();
-
     /**
-     * Creates a directory structure (recursively) in the specified project.
-     * 
-     * @param projectName
-     *            The name of the project where directories should be created
-     * @param directoryPath
-     *            The path of directories to create, relative to the project
-     *            root
-     * @return A status message indicating success or failure
+     * Creates a folder and any missing folders above it.
+     * <p>
+     * A folder has no content, so this cannot go through {@link #applyTextEdits}: it
+     * keeps its own mechanism and returns an {@link EditResult} only so a caller
+     * branches on one shape. Idempotent - a folder that already exists is reported
+     * with {@code versionBefore} equal to {@code versionAfter}, which says nothing
+     * moved.
      */
-    public String createDirectories( String projectName, String directoryPath )
+    public EditResult createDirectories( String projectName, String directoryPath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( directoryPath );
@@ -142,7 +163,6 @@ public class CodeEditingService
 
         try
         {
-            // Get the project
             IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
             IProject project = root.getProject( projectName );
 
@@ -155,33 +175,31 @@ public class CodeEditingService
                 project.open( null );
             }
 
-            // Fix the path by removing any leading slash
             String normalizedPath = directoryPath;
             while ( normalizedPath.startsWith( "/" ) || normalizedPath.startsWith( "\\" ) )
             {
                 normalizedPath = normalizedPath.substring( 1 );
             }
-
             if ( normalizedPath.isEmpty() )
             {
                 throw new RuntimeException( "Error: Invalid directory path. Path cannot be empty after normalization." );
             }
 
-            // Get the folder handle
             IFolder folder = project.getFolder( normalizedPath );
-
             if ( folder.exists() )
             {
-                return "Directory '" + normalizedPath + "' already exists in project '" + projectName + "'.";
+                // Nothing changed, so nothing is affected: an empty list is what says so.
+                ResourceVersion current = ResourceVersion.of( folder );
+                return resourceRelocated( folder, current, List.of(), EditorReveal.none(),
+                        new WorkspaceSync( true, false, "not-applicable" ), Diagnostic.none() );
             }
 
-            // Create the folder hierarchy
             ResourceUtilities.createFolderHierarchy( folder );
-
-            // Add this line to refresh the parent container (or project)
             folder.getParent().refreshLocal( IResource.DEPTH_INFINITE, null );
 
-            return "Success: Directory structure '" + normalizedPath + "' created in project '" + projectName + "'.";
+            return resourceRelocated( folder, ResourceVersion.UNKNOWN,
+                    List.of( AffectedResource.of( folder, ChangeKind.CREATED ) ), EditorReveal.none(),
+                    new WorkspaceSync( true, false, "not-applicable" ), Diagnostic.none() );
         }
         catch ( CoreException e )
         {
@@ -189,355 +207,101 @@ public class CodeEditingService
         }
     }
 
+
     /**
-     * Undoes the last edit operation by restoring a file from its backup.
-     * 
-     * @param projectName
-     *            The name of the project containing the file
-     * @param filePath
-     *            The path to the file relative to the project root
-     * @return A status message indicating success or failure
+     * Restores a file from the newest state in Eclipse's local history.
+     * <p>
+     * Undo is a text change like any other, so the restored content is written
+     * through {@link #applyTextEdits} as one minimal replacement: it produces a diff
+     * of what was rolled back and reveals it, rather than only saying that it
+     * happened. Local history rather than an in-memory stack, so this still works
+     * after a restart and is the same state the user sees under Compare With &gt;
+     * Local History.
+     * <p>
+     * No staleness check: undoing means "restore whatever the newest stored state
+     * is", which is precisely a caller not claiming to know the current content.
      */
-    public String undoEdit( String projectName, String filePath )
+    public EditResult undoEdit( String projectName, String filePath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
+            IFileState[] history = file.getHistory( null );
+            if ( history == null || history.length == 0 )
             {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                project.open( null );
+                return EditResult.rejected( file, before, Diagnostic.fatal(
+                        DiagnosticCode.HISTORY_UNAVAILABLE,
+                        "No local history is stored for '" + filePath + "', so there is nothing to undo." ) );
             }
 
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
+            Charset charset = Charset.forName( file.getCharset() );
+            String restored = new String( ResourceUtilities.readInputStream( history[0].getContents() ), charset );
+            String current = ResourceUtilities.readFileContent( file );
 
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-            // Try to refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
+            TextEditRequest edit = minimalReplacement( new Document( current ), current, restored );
 
-            byte[] previousContent = takeEditBackup( file );
-            if ( previousContent == null )
-            {
-                IFileState[] history = file.getHistory( null );
-                if ( history == null || history.length == 0 )
-                {
-                    throw new RuntimeException( "Error: No edit history found for file '" + filePath + "'." );
-                }
-                previousContent = ResourceUtilities.readInputStream( history[0].getContents() );
-            }
-
-            try (ByteArrayInputStream source = new ByteArrayInputStream( previousContent ))
-            {
-                file.setContents( source, IResource.FORCE, null );
-            }
-
-            String workspaceState = synchronizeAfterEdit( file, 1 );
-
-            return "Success: Undid last edit in file '" + filePath + "' in project '" + projectName + "'." + "Updated file content:\n```"
-                    + ResourceUtilities.readFileContent( file ) + "\n```" + workspaceState;
+            return applyTextEdits( projectName, filePath, IResource.NULL_STAMP, List.of( edit ), false );
         }
-        catch ( CoreException | IOException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
 
-    /**
-     * Replaces a specific string in a file with a new string, optionally within
-     * a specified line range.
-     * 
-     * @param projectName
-     *            The name of the project containing the file
-     * @param filePath
-     *            The path to the file relative to the project root
-     * @param oldString
-     *            The exact string to replace
-     * @param newString
-     *            The new string to insert
-     * @param startLine
-     *            Optional line number to start searching from (0 for beginning
-     *            of file)
-     * @param endLine
-     *            Optional line number to start searching from (0 for beginning
-     *            of file)
-     * @return A status message indicating success or failure
-     */
-    public String replaceStringInFile( String projectName, String filePath, String oldString, String newString, Integer startLine, Integer endLine )
-    {
-
-        Objects.requireNonNull( projectName );
-        Objects.requireNonNull( filePath );
-        Objects.requireNonNull( oldString );
-
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
-        if ( newString == null )
-        {
-            newString = ""; // Allow empty replacement
-        }
-
-        try
-        {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Try to refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
-
-            // Read the file line by line for better range handling
-            List<String> lines = ResourceUtilities.readFileLinesWithTerminators( file );
-
-            // Validate line range
-            int totalLines = lines.size();
-
-            // Convert to 0-based indexing for internal use
-            int effectiveStartLine = ( startLine != null ) ? Math.max( 0, startLine - 1 ) : 0;
-            int effectiveEndLine = ( endLine != null ) ? Math.min( totalLines - 1, endLine - 1 ) : totalLines - 1;
-
-            // Validate range
-            if ( effectiveStartLine >= totalLines )
-            {
-                throw new RuntimeException( "Error: Start line " + startLine + " is beyond the end of the file (total lines: " + totalLines + ")." );
-            }
-            effectiveEndLine = Math.min( effectiveEndLine, totalLines - 1 );
-
-            if ( effectiveStartLine > effectiveEndLine )
-            {
-                throw new RuntimeException( "Error: Start line cannot be greater than end line." );
-            }
-
-            // Store the content as a single string for the range we're working
-            // with
-            StringBuilder rangeContent = new StringBuilder();
-            for ( int i = effectiveStartLine; i <= effectiveEndLine; i++ )
-            {
-                rangeContent.append( lines.get( i ) );
-            }
-
-            String rangeText = rangeContent.toString();
-
-            // Check if the range contains the target string
-            if ( !rangeText.contains( oldString ) )
-            {
-                String rangeInfo = "";
-                if ( startLine != null || endLine != null )
-                {
-                    rangeInfo = " within range (lines " + ( startLine != null ? startLine : 1 ) + " to " + ( endLine != null ? endLine : totalLines ) + ")";
-                }
-                throw new RuntimeException( "Error: The specified string was not found in the file" + rangeInfo + "." );
-            }
-
-            // Replace the string in the range
-            String replacedRangeText = rangeText.replace( oldString, newString );
-
-            // Build the new content
-            StringBuilder modifiedContent = new StringBuilder();
-
-            // Add lines before the range
-            for ( int i = 0; i < effectiveStartLine; i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-
-            // Add the modified range content
-            modifiedContent.append( replacedRangeText );
-
-            // Add lines after the range
-            for ( int i = effectiveEndLine + 1; i < totalLines; i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-
-            var modifiedContentString = modifiedContent.toString();
-            String diff = generateCodeDiff( projectName, filePath, modifiedContentString, 3 );
-
-            // Write back to the file
-            try (ByteArrayInputStream source = new ByteArrayInputStream( modifiedContentString.getBytes( Charset.forName( file.getCharset() ) ) ))
-            {
-                file.setContents( source, IResource.FORCE, null );
-            }
-
-            final int revealLine = effectiveStartLine + 1;
-            String workspaceState = synchronizeAfterEdit( file, revealLine );
-
-            return "Success: String replaced in file '" + filePath + "' in project '" + projectName + "'.\n" + "Changes:\n```diff\n" + diff + "\n```"
-                    + workspaceState;
-
-        }
-        catch ( CoreException | IOException e )
-        {
-            throw new RuntimeException( e );
-        }
-    }
 
     /**
-     * Inserts content after a specific line in an existing file.
-     * 
-     * @param projectName
-     *            The name of the project containing the file
-     * @param filePath
-     *            The path to the file relative to the project root
-     * @param content
-     *            The content to insert into the file
-     * @param atLine
-     *            The line number after which to insert the text (0 for
-     *            beginning of file)
-     * @return A status message indicating success or failure
+     * Inserts content before a line of an existing file.
+     * <p>
+     * An insertion is a replacement of an empty range at the start of {@code atLine},
+     * so it goes through {@link #applyTextEdits} like every other text change.
+     *
+     * @param atLine the 1-based line to insert before; one past the last line appends
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what would change without writing
      */
-    public String insertIntoFile( String projectName, String filePath, String content, int atLine )
+    public EditResult insertIntoFile( String projectName, String filePath, String content, int atLine,
+                                      long expectedModificationStamp, boolean preview )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
-        if ( Objects.isNull( content ) )
-        {
-            content = ""; // Allow empty content
-        }
+        IFile file = resolveEditableFile( projectName, filePath );
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
+            IDocument document = new Document( ResourceUtilities.readFileContent( file ) );
+            int lineCount = contentLineCount( document );
+            if ( atLine < 1 || atLine > lineCount + 1 )
             {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
+                return invalidRange( file, "Line " + atLine + " is outside " + filePath
+                        + ", which has " + lineCount + " line(s). Insert before line 1 to " + ( lineCount + 1 )
+                        + ", where " + ( lineCount + 1 ) + " appends." );
             }
 
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Try to refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
-            List<String> lines = ResourceUtilities.readFileLinesWithTerminators( file );
-
-            // convert to 0-based indexing
-            var effectiveAtLine = atLine - 1;
-            // Validate line number
-            if ( effectiveAtLine < 0 || effectiveAtLine > lines.size() )
+            // Inserted text becomes whole lines of the file, so it has to end like one.
+            String inserted = content == null ? "" : content;
+            if ( !inserted.endsWith( "\n" ) )
             {
-                throw new RuntimeException( "Error: Invalid line number " + atLine + ". File has " + lines.size() + " lines." );
+                inserted = inserted + "\n";
             }
 
-            // Build the new content
-            StringBuilder modifiedContent = new StringBuilder();
+            int offset = lineStartOffset( document, atLine );
+            TextEditRequest edit = new TextEditRequest( ContentRange.of( document, offset, 0 ), "", inserted );
 
-            // Add lines before insertion point
-            for ( int i = 0; i < effectiveAtLine; i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-
-            // Add the new content
-            modifiedContent.append( content );
-            if ( !content.endsWith( "\n" ) )
-            {
-                modifiedContent.append( "\n" );
-            }
-
-            // Add the remaining lines
-            for ( int i = effectiveAtLine; i < lines.size(); i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-
-            var modifiedContentString = modifiedContent.toString();
-            String diff = generateCodeDiff( projectName, filePath, modifiedContentString, 3 );
-
-            // Write back to the file
-            try (ByteArrayInputStream source = new ByteArrayInputStream( modifiedContentString.getBytes( Charset.forName( file.getCharset() ) ) ))
-            {
-                file.setContents( source, IResource.FORCE, null );
-            }
-
-            String workspaceState = synchronizeAfterEdit( file, atLine );
-
-            return "Success: file '" + filePath + "' in project '" + projectName + "' was updated.\n" + "Changes:\n```diff\n" + diff + "\n```"
-                    + workspaceState;
-
+            return applyTextEdits( projectName, filePath, expectedModificationStamp, List.of( edit ), preview );
         }
-        catch ( CoreException | IOException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
+
 
     /**
      * Does the actual work of refreshing an editor.
@@ -577,12 +341,25 @@ public class CodeEditingService
         }
     }
 
+    /** What an edit produced: the resulting version and how the IDE caught up. */
+    record EditSynchronization( ResourceVersion version, WorkspaceSync workspaceState )
+    {
+    }
+
     /**
-     * Completes an edit before its MCP call returns. The file is persisted by
-     * the IFile mutation itself; this barrier then aligns the filesystem,
-     * workspace notifications, JDT model, resource cache, and editor view.
+     * Completes an edit and reports the resulting resource version.
+     *
+     * @param undoState the local-history state this edit displaced, or null when the
+     *            edit created the file or history was unavailable
      */
-    private String synchronizeAfterEdit( IFile file, int revealLine ) throws CoreException
+    private EditSynchronization synchronizeAfterEdit( IFile file, int revealLine, IFileState undoState ) throws CoreException
+    {
+        WorkspaceSync workspaceState = synchronizeAfterEditInternal( file, revealLine );
+        // Captured after the barrier, so it reflects the state the edit left behind.
+        return new EditSynchronization( ResourceVersion.of( file ), workspaceState );
+    }
+
+    private WorkspaceSync synchronizeAfterEditInternal( IFile file, int revealLine ) throws CoreException
     {
         file.refreshLocal( IResource.DEPTH_ZERO, null );
         ResourcesPlugin.getWorkspace().checkpoint( false );
@@ -604,10 +381,7 @@ public class CodeEditingService
             revealLineInEditor( file, revealLine );
         } );
 
-        return "\nWorkspace state: saved=" + file.isSynchronized( IResource.DEPTH_ZERO )
-                + ", refreshed=true, cache=" + ( cached ? "updated" : "not-cached" )
-                + ", jdtConsistent=" + jdtState
-                + ", modificationStamp=" + file.getModificationStamp();
+        return new WorkspaceSync( file.isSynchronized( IResource.DEPTH_ZERO ), cached, jdtState );
     }
 
     /**
@@ -680,54 +454,9 @@ public class CodeEditingService
             // Read the original file content
             String originalContent = ResourceUtilities.readFileContent( file );
 
-            // Create temporary files for diff
-            Path originalFile = Files.createTempFile( "original-", ".tmp" );
-            Path proposedFile = Files.createTempFile( "proposed-", ".tmp" );
-
-            try
-            {
-                // Write contents to temp files
-                Files.writeString( originalFile, originalContent );
-                Files.writeString( proposedFile, proposedCode );
-
-                // Generate diff using JGit
-                ByteArrayOutputStream diffOutput = new ByteArrayOutputStream();
-                DiffFormatter formatter = new DiffFormatter( diffOutput );
-                formatter.setContext( contextLines );
-                formatter.setDiffComparator( RawTextComparator.DEFAULT );
-
-                RawText rawOriginal = new RawText( originalFile.toFile() );
-                RawText rawProposed = new RawText( proposedFile.toFile() );
-
-                // Write a diff header
-                diffOutput.write( ( "--- /" + filePath + "\n" ).getBytes() );
-                diffOutput.write( ( "+++ /" + filePath + "\n" ).getBytes() );
-
-                // Generate edit list
-                EditList edits = new HistogramDiff().diff( RawTextComparator.DEFAULT, rawOriginal, rawProposed );
-
-                // Format the edits with proper context
-                formatter.format( edits, rawOriginal, rawProposed );
-
-                String diffResult = diffOutput.toString();
-                formatter.close();
-
-                // If there are no changes, inform the user
-                if ( diffResult.trim().isEmpty() || !diffResult.contains( "@@" ) )
-                {
-                    // No changes detected. The proposed code is identical to
-                    // the existing file.
-                    return "";
-                }
-
-                return diffResult;
-            }
-            finally
-            {
-                // Clean up temporary files
-                Files.deleteIfExists( originalFile );
-                Files.deleteIfExists( proposedFile );
-            }
+            // JGit does the diffing; UnifiedDiffs owns the formatter setup and the
+            // convention that identical sides produce an empty string.
+            return UnifiedDiffs.diff( originalContent, "/" + filePath, proposedCode, "/" + filePath, contextLines );
         }
         catch ( Exception e )
         {
@@ -807,77 +536,74 @@ public class CodeEditingService
     }
 
     /**
-     * Formats an entire file. Java uses JDT directly; other file types use the
-     * formatter contributed by their registered Eclipse editor.
-     *
-     * @param projectName
-     *            The project name
-     * @param filePath
-     *            The file path relative to the project root
-     * @return A status message
+     * Formats a whole file.
+     * <p>
+     * A Java file is formatted by JDT here and the result written through
+     * {@link #applyTextEdits} as one minimal replacement, so it takes the same write
+     * path as any other edit and the diff shows exactly what the formatter touched.
+     * <p>
+     * Any other file type is formatted by the formatter its registered editor
+     * contributes, which performs and saves the change itself through the editor's
+     * own command. There is no text edit to route, so that path keeps its mechanism
+     * and only reports the outcome in the same shape.
      */
-    public String formatFile( String projectName, String filePath )
+    public EditResult formatFile( String projectName, String filePath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
 
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
+
         try
         {
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-            if ( !project.exists() || !project.isOpen() )
-            {
-                return "Error: Project '" + projectName + "' not found or not open.";
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-            if ( !file.exists() )
-            {
-                return "Error: File '" + filePath + "' not found.";
-            }
-
-            // Read the file content
             String originalContent = ResourceUtilities.readFileContent( file );
 
-            // Format using the language-aware formatter
-            String formatter;
-            String formattedContent;
             if ( "java".equalsIgnoreCase( file.getFileExtension() ) )
             {
-                formatter = "JDT Java formatter";
-                formattedContent = formatCode( originalContent, projectName );
-            }
-            else
-            {
-                formatter = formatUsingRegisteredEditor( file );
-                formattedContent = ResourceUtilities.readFileContent( file );
+                String formatted = formatCode( originalContent, projectName );
+                TextEditRequest edit = minimalReplacement( new Document( originalContent ), originalContent, formatted );
+                return applyTextEdits( projectName, filePath, IResource.NULL_STAMP, List.of( edit ), false );
             }
 
-            if ( formattedContent.equals( originalContent ) )
-            {
-                return "File '" + filePath + "' is already properly formatted by " + formatter + ".";
-            }
+            formatUsingRegisteredEditor( file );
+            String formatted = ResourceUtilities.readFileContent( file );
 
-            // Write back
-            try (ByteArrayInputStream source = new ByteArrayInputStream( formattedContent.getBytes( Charset.forName( file.getCharset() ) ) ))
-            {
-                if ( "java".equalsIgnoreCase( file.getFileExtension() ) )
-                {
-                    file.setContents( source, IResource.FORCE, null );
-                }
-            }
+            EditSynchronization synchronization = synchronizeAfterEdit( file, 1, currentHistoryState( file ) );
+            List<Diagnostic> diagnostics = new ArrayList<>();
 
-            String workspaceState = synchronizeAfterEdit( file, 1 );
+            // The editor already wrote; this only describes what it did, so that a
+            // caller reads the same fields whichever formatter ran.
+            TextEditRequest describedAs = minimalReplacement( new Document( originalContent ), originalContent, formatted );
+            List<AppliedEdit> applied = formatted.equals( originalContent )
+                    ? List.of()
+                    : List.of( new AppliedEdit( describedAs.range(),
+                            ContentRange.wholeDocument( new Document( formatted ) ),
+                            describedAs.replacement().length(),
+                            describedAs.expectedText().length() ) );
 
-
-            return "Success: File '" + filePath + "' formatted using " + formatter + "." + workspaceState;
+            return new EditResult(
+                    diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS,
+                    file.getProject().getName(),
+                    file.getProjectRelativePath().toString(),
+                    before,
+                    synchronization.version(),
+                    applied,
+                    UnifiedDiffs.diff( originalContent, filePath, formatted, filePath, UnifiedDiffs.DEFAULT_CONTEXT_LINES ),
+                    applied.isEmpty() ? List.of() : List.of( AffectedResource.of( file, ChangeKind.MODIFIED ) ),
+                    describeReveal( file, new ContentRange( 1, 1, 1, 1 ), diagnostics ),
+                    EditResult.NO_UNDO_STATE,
+                    synchronization.workspaceState(),
+                    diagnostics );
         }
         catch ( Exception e )
         {
-            throw new RuntimeException( "Error formatting file: " + e.getMessage(), e );
+            logger.error( e.getMessage(), e );
+            return EditResult.rejected( file, before, Diagnostic.fatal(
+                    DiagnosticCode.FORMATTER_FAILED, ExceptionUtils.getRootCauseMessage( e ) ) );
         }
     }
+
 
     /**
      * Invokes the active editor's context-sensitive Format action and saves the
@@ -966,7 +692,17 @@ public class CodeEditingService
         }
     }
 
-    public String createFileAndOpen( String projectName, String filePath, String content )
+    /**
+     * Creates a file, with any missing parent folders, and opens it.
+     * <p>
+     * A creation cannot go through {@link #applyTextEdits}: there is no resource yet
+     * to check a stamp against and no document to place a range in. It keeps its own
+     * mechanism - {@link IFile#create} - and returns an {@link EditResult} only so
+     * that a caller branches on one shape whatever it asked for. The whole content is
+     * reported as a single inserting edit, and {@code versionBefore} is
+     * {@link ResourceVersion#UNKNOWN} because there was no version before.
+     */
+    public EditResult createFileAndOpen( String projectName, String filePath, String content )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
@@ -980,14 +716,10 @@ public class CodeEditingService
             throw new IllegalArgumentException( "Error: File path cannot be empty." );
         }
 
-        if ( content == null )
-        {
-            content = ""; // Allow empty content
-        }
+        String created = content == null ? "" : content;
 
         try
         {
-            // Get the project
             IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
             IProject project = root.getProject( projectName );
 
@@ -995,50 +727,65 @@ public class CodeEditingService
             {
                 throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
             }
-
             if ( !project.isOpen() )
             {
                 throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
             }
 
-            // Fix the path by removing any leading slash
             String normalizedPath = filePath;
             while ( normalizedPath.startsWith( "/" ) || normalizedPath.startsWith( "\\" ) )
             {
                 normalizedPath = normalizedPath.substring( 1 );
             }
-
             if ( normalizedPath.isEmpty() )
             {
                 throw new RuntimeException( "Error: Invalid file path. Path cannot be empty after normalization." );
             }
 
-            // Create the file path
             final IFile file = project.getFile( normalizedPath );
-
             if ( file.exists() )
             {
                 throw new RuntimeException( "Error: File '" + normalizedPath + "' already exists in project '" + projectName + "'." );
             }
 
-            // Create parent folders if they don't exist
             IContainer parent = file.getParent();
             if ( parent instanceof IFolder && !parent.exists() )
             {
                 ResourceUtilities.createFolderHierarchy( (IFolder) parent );
             }
-            // Create the file with content
-            ByteArrayInputStream source = new ByteArrayInputStream( content.getBytes( Charset.forName( project.getDefaultCharset() ) ) );
-            file.create( source, true, null );
-            String workspaceState = synchronizeAfterEdit( file, 1 );
 
-            return "Success: File '" + normalizedPath + "' created in project '" + projectName + "'." + workspaceState;
+            ByteArrayInputStream source = new ByteArrayInputStream(
+                    created.getBytes( Charset.forName( project.getDefaultCharset() ) ) );
+            file.create( source, true, null );
+
+            aiIgnoreService.assertAccessAllowed( file );
+
+            EditSynchronization synchronization = synchronizeAfterEdit( file, 1, null );
+            ContentRange newRange = ContentRange.wholeDocument( new Document( created ) );
+
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( file, newRange, diagnostics );
+
+            return new EditResult(
+                    diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS,
+                    file.getProject().getName(),
+                    file.getProjectRelativePath().toString(),
+                    ResourceVersion.UNKNOWN,
+                    synchronization.version(),
+                    List.of( new AppliedEdit( new ContentRange( 1, 1, 1, 1 ), newRange, created.length(), 0 ) ),
+                    UnifiedDiffs.diff( "", normalizedPath, created, normalizedPath, UnifiedDiffs.DEFAULT_CONTEXT_LINES ),
+                    List.of( AffectedResource.of( file, ChangeKind.CREATED ) ),
+                    reveal,
+                    EditResult.NO_UNDO_STATE,
+                    synchronization.workspaceState(),
+                    diagnostics );
         }
-        catch ( CoreException e )
+        catch ( CoreException | BadLocationException e )
         {
             throw new RuntimeException( e );
         }
     }
+
 
     /**
      * Safely opens a file in the editor, handling null cases, and brings the
@@ -1110,201 +857,128 @@ public class CodeEditingService
     }
 
     /**
-     * Replaces specified lines in a file with new content.
-     * 
-     * @param projectName
-     *            The name of the project containing the file
-     * @param filePath
-     *            The path to the file relative to the project root
-     * @param startLine
-     *            The line number to start replacement from (1-based index)
-     * @param endLine
-     *            The line number to end replacement at (inclusive, 1-based
-     *            index)
-     * @param replacementContent
-     *            The new content to insert in place of the deleted lines
-     * @return A status message indicating success or failure
+     * Replaces a range of whole lines with new content.
+     * <p>
+     * The range becomes a single text edit applied by {@link #applyTextEdits}, so the
+     * file is written once and the caller gets the same optional staleness check
+     * every other editing tool has.
+     *
+     * @param startLine the first line to replace, 1-based and inclusive
+     * @param endLine the last line to replace, 1-based and inclusive
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what would change without writing
      */
-    public String replaceLines( String projectName, String filePath, String replacementContent, int startLine, int endLine )
+    public EditResult replaceLines( String projectName, String filePath, String replacementContent,
+                                    int startLine, int endLine, long expectedModificationStamp, boolean preview )
+    {
+        return replaceLineRange( projectName, filePath, replacementContent, startLine, endLine,
+                expectedModificationStamp, preview );
+    }
+
+    /**
+     * The one implementation behind {@code replaceLines} and {@code deleteLinesInFile}:
+     * both name a range of whole lines and hand it text to stand in their place.
+     */
+    private EditResult replaceLineRange( String projectName, String filePath, String replacementContent,
+                                         int startLine, int endLine, long expectedModificationStamp, boolean preview )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
-
-        if ( replacementContent == null )
-        {
-            replacementContent = ""; // Allow empty replacement content
-        }
+        String replacement = replacementContent == null ? "" : replacementContent;
+        IFile file = resolveEditableFile( projectName, filePath );
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
+            IDocument document = new Document( ResourceUtilities.readFileContent( file ) );
+            EditResult rangeProblem = validateLineRange( file, filePath, startLine, endLine,
+                    contentLineCount( document ) );
+            if ( rangeProblem != null )
             {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                project.open( null );
+                return rangeProblem;
             }
 
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
+            // Replacement text stands in for whole lines, so it has to end like one.
+            if ( !replacement.isEmpty() && !replacement.endsWith( "\n" ) )
             {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-            // Try to refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
-
-            // Read file content
-            List<String> lines = ResourceUtilities.readFileLinesWithTerminators( file );
-
-            // Validate line numbers
-            int totalLines = lines.size();
-            int startLine0 = startLine - 1;
-            int endLine0 = endLine - 1;
-            if ( startLine0 < 0 || endLine0 < startLine0 || startLine0 >= totalLines )
-            {
-                throw new IllegalArgumentException( "Error: Invalid line range specified." );
+                replacement = replacement + "\n";
             }
 
-            // Ensure endLine is within bounds
-            endLine0 = Math.max( Math.min( endLine0, totalLines - 1 ), 0 );
+            ContentRange range = wholeLineRange( document, startLine, endLine );
+            IRegion region = range.toRegion( document );
+            TextEditRequest edit = new TextEditRequest( range,
+                    document.get( region.getOffset(), region.getLength() ), replacement );
 
-            StringBuilder modifiedContent = new StringBuilder();
-
-            // Store lines before startLine
-            for ( int i = 0; i < startLine0; i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-            // Add the replacement content
-            modifiedContent.append( replacementContent );
-            if ( !replacementContent.isEmpty() && !replacementContent.endsWith( "\n" ) )
-            {
-                modifiedContent.append( "\n" );
-            }
-            // Add lines after replacement
-            for ( int i = endLine0 + 1; i < totalLines; i++ )
-            {
-                modifiedContent.append( lines.get( i ) );
-            }
-
-            var modifiedContentString = modifiedContent.toString();
-            // Generate diff between old and new versions
-            String diff = generateCodeDiff( projectName, filePath, modifiedContentString, 3 );
-
-            // Write back to the file
-            try (ByteArrayInputStream source = new ByteArrayInputStream( modifiedContentString.getBytes( Charset.forName( file.getCharset() ) ) ))
-            {
-                file.setContents( source, IResource.FORCE, null );
-            }
-
-            String workspaceState = synchronizeAfterEdit( file, startLine );
-
-            return "Success: file '" + filePath + "' in project '" + projectName + "' was updated.\n" + "Changes:\n```diff\n" + diff + "\n```"
-                    + workspaceState;
+            return applyTextEdits( projectName, filePath, expectedModificationStamp, List.of( edit ), preview );
         }
-        catch ( CoreException | IOException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
 
-    public String renameFile( String projectName, String filePath, String newFileName )
+
+    /**
+     * Renames a file within its own directory.
+     * <p>
+     * A rename cannot go through {@link #applyTextEdits}: the content does not
+     * change, its name does. It keeps {@link IResource#move} and returns an
+     * {@link EditResult} only so a caller branches on one shape. {@code resource} in
+     * the result is the renamed file, which is what the caller addresses next.
+     * <p>
+     * For Java types prefer {@code refactorRenameJavaType}: this does not update
+     * references.
+     */
+    public EditResult renameFile( String projectName, String filePath, String newFileName )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
         Objects.requireNonNull( newFileName );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
         if ( newFileName.isEmpty() )
         {
             throw new IllegalArgumentException( "Error: New file name cannot be empty." );
         }
 
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
+
         try
         {
-            // Get the project and file
             IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-
-            // Try to refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
-
-            // Get the parent folder and construct the new file path
             IContainer parent = file.getParent();
             IPath newPath = parent.getFullPath().append( newFileName );
 
-            // Check if a file with the new name already exists
             IFile newFile = root.getFile( newPath );
             if ( newFile.exists() )
             {
                 throw new RuntimeException( "Error: A file named '" + newFileName + "' already exists in the same directory." );
             }
 
-            // Perform the rename operation
-            file.move( newPath, IResource.FORCE, null );
-
-            // Refresh the parent container
+            IPath previousPath = file.getFullPath();
+            file.move( newPath, IResource.FORCE | IResource.KEEP_HISTORY, null );
             parent.refreshLocal( IResource.DEPTH_ONE, null );
+            // Nothing may still be served from the cache under the old name.
+            resourceCache.resourceChanged( previousPath );
 
-            // Try to open the renamed file in the editor
-            sync.asyncExec( () -> {
-                safeOpenEditor( newFile );
-                revealLineInEditor( newFile, 1 );
-            } );
+            EditSynchronization synchronization = synchronizeAfterEdit( newFile, 1, null );
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( newFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
 
-            return "Success: File '" + filePath + "' renamed to '" + newFileName + "' in project '" + projectName + "'.";
+            // The old name holds nothing now, which a caller that still has it needs
+            // to be told, so it is listed beside the new one.
+            return resourceRelocated( newFile, before,
+                    List.of( AffectedResource.of( file, ChangeKind.DELETED ),
+                            AffectedResource.of( newFile, ChangeKind.MOVED ) ),
+                    reveal, synchronization.workspaceState(), diagnostics );
         }
         catch ( CoreException e )
         {
             throw new RuntimeException( e );
         }
     }
+
 
     /**
      * Extracts a nested Java type into a new top-level compilation unit using
@@ -1319,7 +993,7 @@ public class CodeEditingService
      *            example, "Outer.Inner")
      * @return A status message indicating success or failure
      */
-    public String refactorExtractTypeToNewFile( String projectName, String filePath, String nestedTypeName )
+    public EditResult refactorExtractTypeToNewFile( String projectName, String filePath, String nestedTypeName )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
@@ -1388,32 +1062,38 @@ public class CodeEditingService
             Refactoring refactoring = createMoveTypeToNewFileRefactoring( nestedType );
             IProgressMonitor monitor = new NullProgressMonitor();
             RefactoringStatus status = refactoring.checkInitialConditions( monitor );
-            if ( status.hasFatalError() )
+            EditResult precondition = refusedPrecondition( file, status );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in initial conditions: " + status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
             status = refactoring.checkFinalConditions( monitor );
-            if ( status.hasFatalError() )
+            precondition = refusedPrecondition( file, status );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in final conditions: " + status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
             Change change = refactoring.createChange( monitor );
+            // Read the change set before performing it: afterwards the tree is the undo.
+            PendingChanges pending = pendingChanges( change );
             change.perform( monitor );
             project.refreshLocal( IResource.DEPTH_INFINITE, monitor );
 
             IFile extractedFile = project.getFile( file.getProjectRelativePath().removeLastSegments( 1 ).append( nestedType.getElementName() + ".java" ) );
-            sync.asyncExec( () -> {
-                if ( extractedFile.exists() )
-                {
-                    safeOpenEditor( extractedFile );
-                    revealLineInEditor( extractedFile, 1 );
-                }
-            } );
+            // The refactoring rewrote the source file, created the new one, and updated
+            // references across the workspace. It reports the extracted file - what the
+            // caller addresses next - and all three kinds of change in
+            // affectedResources, so the source file no longer has to be guessed at.
+            resourceCache.resourceChanged( file.getFullPath() );
+            EditSynchronization synchronization = synchronizeAfterEdit( extractedFile, 1, null );
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( extractedFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
 
-            return "Success: Nested Java type '" + nestedTypeName + "' was extracted to '" + extractedFile.getProjectRelativePath()
-                    + "'.\nAll required references have been updated.";
+            return resourceRelocated( extractedFile, ResourceVersion.UNKNOWN,
+                    affectedBy( pending, extractedFile, ChangeKind.CREATED ),
+                    reveal, synchronization.workspaceState(), diagnostics );
         }
         catch ( CoreException | ReflectiveOperationException e )
         {
@@ -1478,7 +1158,7 @@ public class CodeEditingService
      *            The new name for the type (without .java extension)
      * @return A status message indicating success or failure
      */
-    public String refactorRenameJavaType( String projectName, String filePath, String newTypeName )
+    public EditResult refactorRenameJavaType( String projectName, String filePath, String newTypeName )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
@@ -1584,28 +1264,31 @@ public class CodeEditingService
             RefactoringStatus status = new RefactoringStatus();
             Refactoring refactoring = descriptor.createRefactoring( status );
 
-            if ( status.hasFatalError() )
+            EditResult precondition = refusedPrecondition( file, status );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error creating refactoring: " + status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check initial conditions
             IProgressMonitor monitor = new NullProgressMonitor();
-            RefactoringStatus checkStatus = refactoring.checkInitialConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( file, refactoring.checkInitialConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in initial conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check final conditions
-            checkStatus = refactoring.checkFinalConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( file, refactoring.checkFinalConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in final conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
+
+            ResourceVersion before = ResourceVersion.of( file );
 
             // Perform the refactoring
             Change change = refactoring.createChange( monitor );
+            // Read the change set before performing it: afterwards the tree is the undo.
+            PendingChanges pending = pendingChanges( change );
             change.perform( monitor );
 
             // Refresh the project
@@ -1615,21 +1298,16 @@ public class CodeEditingService
             String newFilePath = filePath.replace( oldTypeName + ".java", finalNewTypeName + ".java" );
             IFile newFile = project.getFile( IPath.fromPath( Path.of( newFilePath ) ) );
 
-            // Open the renamed file in the editor
-            sync.asyncExec( () -> {
-                if ( newFile.exists() )
-                {
-                    safeOpenEditor( newFile );
-                    revealLineInEditor( newFile, 1 );
-                }
-            } );
+            // The refactoring renamed the file and updated every reference to it. It
+            // reports the renamed file - what the caller addresses next - and every
+            // file whose references it rewrote in affectedResources.
+            resourceCache.resourceChanged( file.getFullPath() );
+            EditSynchronization synchronization = synchronizeAfterEdit( newFile, 1, null );
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( newFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
 
-            StringBuilder result = new StringBuilder();
-            result.append( "Success: Java type '" ).append( oldTypeName ).append( "' renamed to '" ).append( finalNewTypeName ).append( "'.\n" );
-            result.append( "File renamed from '" ).append( filePath ).append( "' to '" ).append( newFilePath ).append( "'.\n" );
-            result.append( "All references have been updated." );
-
-            return result.toString();
+            return resourceRelocated( newFile, before, affectedBy( pending, newFile, ChangeKind.MOVED ),
+                    reveal, synchronization.workspaceState(), diagnostics );
         }
         catch ( CoreException e )
         {
@@ -1651,7 +1329,7 @@ public class CodeEditingService
      *            "com.example.newpackage")
      * @return A status message indicating success or failure
      */
-    public String refactorMoveJavaType( String projectName, String filePath, String targetPackage )
+    public EditResult refactorMoveJavaType( String projectName, String filePath, String targetPackage )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
@@ -1747,28 +1425,31 @@ public class CodeEditingService
             RefactoringStatus status = new RefactoringStatus();
             Refactoring refactoring = descriptor.createRefactoring( status );
 
-            if ( status.hasFatalError() )
+            EditResult precondition = refusedPrecondition( file, status );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error creating refactoring: " + status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check initial conditions
             IProgressMonitor monitor = new NullProgressMonitor();
-            RefactoringStatus checkStatus = refactoring.checkInitialConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( file, refactoring.checkInitialConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in initial conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check final conditions
-            checkStatus = refactoring.checkFinalConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( file, refactoring.checkFinalConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in final conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
+
+            ResourceVersion before = ResourceVersion.of( file );
 
             // Perform the refactoring
             Change change = refactoring.createChange( monitor );
+            // Read the change set before performing it: afterwards the tree is the undo.
+            PendingChanges pending = pendingChanges( change );
             change.perform( monitor );
 
             // Refresh the project
@@ -1782,22 +1463,16 @@ public class CodeEditingService
 
             IFile newFile = project.getFile( IPath.fromPath( Path.of( newFilePath ) ) );
 
-            // Open the moved file in the editor
-            sync.asyncExec( () -> {
-                if ( newFile.exists() )
-                {
-                    safeOpenEditor( newFile );
-                    revealLineInEditor( newFile, 1 );
-                }
-            } );
+            // The refactoring moved the file and updated every reference to it. It
+            // reports the moved file - what the caller addresses next - and every file
+            // whose references it rewrote in affectedResources.
+            resourceCache.resourceChanged( file.getFullPath() );
+            EditSynchronization synchronization = synchronizeAfterEdit( newFile, 1, null );
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( newFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
 
-            StringBuilder result = new StringBuilder();
-            result.append( "Success: Java type '" ).append( typeName ).append( "' moved from package '" ).append( oldPackageName );
-            result.append( "' to '" ).append( targetPackage ).append( "'.\n" );
-            result.append( "New file location: '" ).append( newFilePath ).append( "'.\n" );
-            result.append( "All references have been updated." );
-
-            return result.toString();
+            return resourceRelocated( newFile, before, affectedBy( pending, newFile, ChangeKind.MOVED ),
+                    reveal, synchronization.workspaceState(), diagnostics );
         }
         catch ( CoreException e )
         {
@@ -1820,7 +1495,7 @@ public class CodeEditingService
      *            path)
      * @return A status message indicating success or failure
      */
-    public String refactorRenamePackage( String projectName, String packageName, String newPackageName )
+    public EditResult refactorRenamePackage( String projectName, String packageName, String newPackageName )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( packageName );
@@ -1905,48 +1580,61 @@ public class CodeEditingService
             RefactoringStatus status = new RefactoringStatus();
             Refactoring refactoring = descriptor.createRefactoring( status );
 
-            if ( status.hasFatalError() )
+            IResource packageResource = packageFragment.getResource();
+            EditResult precondition = refusedPrecondition( packageResource, status );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error creating refactoring: " + status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check initial conditions
             IProgressMonitor monitor = new NullProgressMonitor();
-            RefactoringStatus checkStatus = refactoring.checkInitialConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( packageResource, refactoring.checkInitialConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in initial conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
 
-            // Check final conditions
-            checkStatus = refactoring.checkFinalConditions( monitor );
-            if ( checkStatus.hasFatalError() )
+            precondition = refusedPrecondition( packageResource, refactoring.checkFinalConditions( monitor ) );
+            if ( precondition != null )
             {
-                throw new RuntimeException( "Error in final conditions: " + checkStatus.getMessageMatchingSeverity( RefactoringStatus.FATAL ) );
+                return precondition;
             }
+
+            ResourceVersion before = ResourceVersion.of( packageResource );
 
             // Perform the refactoring
             Change change = refactoring.createChange( monitor );
+            // Read the change set before performing it: afterwards the tree is the undo.
+            PendingChanges pending = pendingChanges( change );
             change.perform( monitor );
 
             // Refresh the project
             project.refreshLocal( IResource.DEPTH_INFINITE, monitor );
 
+            // The refactoring rewrote every compilation unit in the package and every
+            // reference to it. It reports the renamed package folder - the thing that
+            // moved - and lists the files it rewrote, wherever they live, in
+            // affectedResources.
             IPackageFragment renamedPackage = findPackage( javaProject, newPackageName );
-            if ( renamedPackage != null && renamedPackage.getCompilationUnits().length > 0
-                    && renamedPackage.getCompilationUnits()[0].getResource() instanceof IFile renamedFile )
+            IResource renamed = renamedPackage != null ? renamedPackage.getResource() : null;
+            if ( renamed == null )
             {
-                sync.asyncExec( () -> {
-                    safeOpenEditor( renamedFile );
-                    revealLineInEditor( renamedFile, 1 );
-                } );
+                return EditResult.rejected( project, before,
+                        Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                                "The refactoring reported success, but package '" + newPackageName
+                                        + "' cannot be found in project '" + projectName + "'." ) );
             }
 
-            StringBuilder result = new StringBuilder();
-            result.append( "Success: Package '" ).append( packageName ).append( "' renamed to '" ).append( newPackageName ).append( "'.\n" );
-            result.append( "All package declarations and references have been updated." );
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = EditorReveal.none();
+            if ( renamedPackage.getCompilationUnits().length > 0
+                    && renamedPackage.getCompilationUnits()[0].getResource() instanceof IFile renamedFile )
+            {
+                reveal = describeReveal( renamedFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
+            }
 
-            return result.toString();
+            return resourceRelocated( renamed, before, affectedBy( pending, renamed, ChangeKind.MOVED ),
+                    reveal, new WorkspaceSync( true, false, "not-applicable" ), diagnostics );
         }
         catch ( CoreException e )
         {
@@ -1966,7 +1654,7 @@ public class CodeEditingService
      * @return A status message indicating success or failure with details of
      *         changes made
      */
-    public String organizeImports( String projectName, String filePath )
+    public EditResult organizeImports( String projectName, String filePath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
@@ -2031,7 +1719,7 @@ public class CodeEditingService
 
             // Get the original imports for comparison
             String originalSource = compilationUnit.getSource();
-            String originalImports = extractImportSection( originalSource );
+            ResourceVersion before = ResourceVersion.of( file );
 
             // Create a choose import query that automatically selects the first
             // option
@@ -2058,62 +1746,73 @@ public class CodeEditingService
 
             // Create and run the organize imports operation
             IProgressMonitor monitor = new NullProgressMonitor();
-            OrganizeImportsOperation operation = new OrganizeImportsOperation( compilationUnit, null, // astRoot
-                                                                                                      // -
-                                                                                                      // will
-                                                                                                      // be
-                                                                                                      // created
-                                                                                                      // automatically
-                    true, // ignoreLowerCaseNames
-                    true, // save
-                    true, // allowSyntaxErrors
+            OrganizeImportsOperation operation = new OrganizeImportsOperation(
+                    compilationUnit,
+                    null,  // astRoot - created automatically
+                    true,  // ignoreLowerCaseNames
+                    true,  // save
+                    true,  // allowSyntaxErrors
                     chooseImportQuery );
 
-            // Execute the operation
             operation.run( monitor );
-
-            // Refresh the compilation unit to get the updated source
             compilationUnit.getResource().refreshLocal( IResource.DEPTH_ZERO, monitor );
 
-            // Get the new imports for comparison
             String newSource = compilationUnit.getSource();
-            String newImports = extractImportSection( newSource );
 
-            String workspaceState = synchronizeAfterEdit( file, 1 );
+            EditSynchronization synchronization = synchronizeAfterEdit( file, 1, currentHistoryState( file ) );
+            List<Diagnostic> diagnostics = new ArrayList<>();
 
-            // Build the result message
-            StringBuilder result = new StringBuilder();
-            result.append( "Success: Existing imports cleaned up in file '" ).append( filePath ).append( "'.\n" );
-            result.append( "This operation does not add missing imports.\n" );
+            // JDT's operation wrote the compilation unit itself, through the Java
+            // model, so there is no text edit to route through applyTextEdits. This
+            // describes what it did, in the fields a caller reads for any other edit.
+            TextEditRequest describedAs = minimalReplacement( new Document( originalSource ), originalSource, newSource );
+            List<AppliedEdit> applied = originalSource.equals( newSource )
+                    ? List.of()
+                    : List.of( new AppliedEdit( describedAs.range(),
+                            ContentRange.wholeDocument( new Document( newSource ) ),
+                            describedAs.replacement().length(),
+                            describedAs.expectedText().length() ) );
 
-            if ( originalImports.equals( newImports ) )
-            {
-                result.append( "No existing import changes were necessary." );
-            }
-            else
-            {
-                result.append( "\nUpdated imports:\n```java\n" ).append( newImports ).append( "\n```" );
-            }
-
-            return result.append( workspaceState ).toString();
+            return new EditResult(
+                    diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS,
+                    file.getProject().getName(),
+                    file.getProjectRelativePath().toString(),
+                    before,
+                    synchronization.version(),
+                    applied,
+                    UnifiedDiffs.diff( originalSource, filePath, newSource, filePath, UnifiedDiffs.DEFAULT_CONTEXT_LINES ),
+                    applied.isEmpty() ? List.of() : List.of( AffectedResource.of( file, ChangeKind.MODIFIED ) ),
+                    describeReveal( file, new ContentRange( 1, 1, 1, 1 ), diagnostics ),
+                    EditResult.NO_UNDO_STATE,
+                    synchronization.workspaceState(),
+                    diagnostics );
         }
-        catch ( CoreException e )
+        catch ( CoreException | BadLocationException e )
         {
             throw new RuntimeException( "Error during organize imports: " + ExceptionUtils.getRootCauseMessage( e ), e );
         }
     }
 
     /**
-     * Organizes imports in all Java files within a package.
-     * 
+     * Organizes imports in every Java file of a package.
+     * <p>
+     * The package folder is the resource this result is addressed to - the same thing
+     * {@code refactorRenamePackage} reports - and every compilation unit whose source
+     * actually changed is an entry in {@link EditResult#affectedResources()}, carrying
+     * the version an edit to that file must now quote. There is no diff and no edit
+     * list: one per file would be an unbounded second payload.
+     * <p>
+     * A file this could not organize is one {@link Diagnostic}, naming it. The count
+     * it used to report - "Processed 8 file(s)" of a ten-file package - was the only
+     * trace two failures left behind, and the caller was never told which two.
+     *
      * @param projectName
      *            The name of the project containing the package
      * @param packageName
      *            The fully qualified package name (e.g.,
      *            "com.example.mypackage")
-     * @return A status message indicating success or failure
      */
-    public String organizeImportsInPackage( String projectName, String packageName )
+    public EditResult organizeImportsInPackage( String projectName, String packageName )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( packageName );
@@ -2155,18 +1854,9 @@ public class CodeEditingService
                 throw new RuntimeException( "Error: Package '" + packageName + "' not found in project '" + projectName + "'." );
             }
 
-            // Get all compilation units in the package
+            IResource packageResource = packageFragment.getResource();
+            ResourceVersion before = ResourceVersion.of( packageResource );
             ICompilationUnit[] compilationUnits = packageFragment.getCompilationUnits();
-
-            if ( compilationUnits.length == 0 )
-            {
-                return "No Java files found in package '" + packageName + "'.";
-            }
-
-            IProgressMonitor monitor = new NullProgressMonitor();
-            int processedCount = 0;
-            int changedCount = 0;
-            IFile firstChangedFile = null;
 
             // Create a choose import query
             IChooseImportQuery chooseImportQuery = new IChooseImportQuery()
@@ -2186,6 +1876,12 @@ public class CodeEditingService
                 }
             };
 
+            IProgressMonitor monitor = new NullProgressMonitor();
+            List<AffectedResource> changed = new ArrayList<>();
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            IFile firstChangedFile = null;
+            int failed = 0;
+
             for ( ICompilationUnit cu : compilationUnits )
             {
                 try
@@ -2197,39 +1893,50 @@ public class CodeEditingService
                     operation.run( monitor );
                     cu.getResource().refreshLocal( IResource.DEPTH_ZERO, monitor );
 
-                    String newSource = cu.getSource();
-                    if ( !originalSource.equals( newSource ) )
+                    if ( !originalSource.equals( cu.getSource() ) && cu.getResource() instanceof IFile changedFile )
                     {
-                        changedCount++;
-                        if ( firstChangedFile == null && cu.getResource() instanceof IFile changedFile )
+                        resourceCache.resourceChanged( changedFile.getFullPath() );
+                        changed.add( AffectedResource.of( changedFile, ChangeKind.MODIFIED ) );
+                        if ( firstChangedFile == null )
                         {
                             firstChangedFile = changedFile;
                         }
                     }
-                    processedCount++;
                 }
                 catch ( Exception e )
                 {
-                    logger.warn( "Failed to organize imports in " + cu.getElementName() + ": " + e.getMessage() );
+                    // One diagnostic per file, naming it. A count of what succeeded says
+                    // nothing about which files the caller still has to deal with.
+                    failed++;
+                    diagnostics.add( Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                            "Could not organize imports in " + cu.getElementName() + ": "
+                                    + ExceptionUtils.getRootCauseMessage( e ) ) );
                 }
             }
 
-            IFile fileToReveal = firstChangedFile;
-            if ( fileToReveal != null )
-            {
-                sync.asyncExec( () -> {
-                    safeOpenEditor( fileToReveal );
-                    revealLineInEditor( fileToReveal, 1 );
-                } );
-            }
+            EditorReveal reveal = firstChangedFile == null
+                    ? EditorReveal.none()
+                    : describeReveal( firstChangedFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
 
-            StringBuilder result = new StringBuilder();
-            result.append( "Success: Cleaned up existing imports in package '" ).append( packageName ).append( "'.\n" );
-            result.append( "This operation does not add missing imports.\n" );
-            result.append( "Processed " ).append( processedCount ).append( " file(s), " );
-            result.append( changedCount ).append( " file(s) were modified." );
+            // Every file failing is not a partial success: nothing was written at all,
+            // and the caller has to act on the diagnostics rather than on the result.
+            EditStatus status = failed > 0 && failed == compilationUnits.length
+                    ? EditStatus.REJECTED
+                    : diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS;
 
-            return result.toString();
+            return new EditResult(
+                    status,
+                    projectName,
+                    packageResource.getProjectRelativePath().toString(),
+                    before,
+                    ResourceVersion.of( packageResource ),
+                    List.of(),
+                    "",
+                    List.copyOf( changed ),
+                    reveal,
+                    EditResult.NO_UNDO_STATE,
+                    new WorkspaceSync( true, false, "not-applicable" ),
+                    diagnostics );
         }
         catch ( CoreException e )
         {
@@ -2238,46 +1945,18 @@ public class CodeEditingService
     }
 
     /**
-     * Extracts the import section from Java source code.
+     * Moves a file or folder to a different directory in the same project.
+     * <p>
+     * A move cannot go through {@link #applyTextEdits}: the content does not change,
+     * its address does, and there is no range to express that in. It keeps
+     * {@link IResource#move} and returns an {@link EditResult} only so a caller
+     * branches on one shape. {@code resource} in the result is the destination,
+     * because that is what the caller addresses next.
+     * <p>
+     * For Java files prefer {@code refactorMoveJavaType}: this does not update
+     * references.
      */
-    private String extractImportSection( String source )
-    {
-        StringBuilder imports = new StringBuilder();
-        String[] lines = source.split( "\n" );
-        boolean inImports = false;
-
-        for ( String line : lines )
-        {
-            String trimmed = line.trim();
-            if ( trimmed.startsWith( "import " ) )
-            {
-                inImports = true;
-                imports.append( line ).append( "\n" );
-            }
-            else if ( inImports && !trimmed.isEmpty() && !trimmed.startsWith( "import " ) )
-            {
-                // End of imports section
-                break;
-            }
-        }
-
-        return imports.toString().trim();
-    }
-
-    /**
-     * Moves a resource (file or folder) to a different location within the
-     * project. For Java files, use refactorMoveJavaType instead for proper
-     * reference updating.
-     * 
-     * @param projectName
-     *            The name of the project containing the resource
-     * @param sourcePath
-     *            The path to the resource relative to the project root
-     * @param targetPath
-     *            The target directory path relative to the project root
-     * @return A status message indicating success or failure
-     */
-    public String moveResource( String projectName, String sourcePath, String targetPath )
+    public EditResult moveResource( String projectName, String sourcePath, String targetPath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( sourcePath );
@@ -2310,7 +1989,6 @@ public class CodeEditingService
                 throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
             }
 
-            // Normalize paths
             String normalizedSource = sourcePath;
             while ( normalizedSource.startsWith( "/" ) || normalizedSource.startsWith( "\\" ) )
             {
@@ -2323,30 +2001,32 @@ public class CodeEditingService
                 normalizedTarget = normalizedTarget.substring( 1 );
             }
 
-            // Get the source resource
             IResource sourceResource = project.findMember( normalizedSource );
             if ( sourceResource == null || !sourceResource.exists() )
             {
                 throw new RuntimeException( "Error: Resource '" + sourcePath + "' does not exist in project '" + projectName + "'." );
             }
 
-            // Warn about Java files
+            if ( sourceResource instanceof IFile sourceFile )
+            {
+                aiIgnoreService.assertAccessAllowed( sourceFile );
+            }
+
             if ( sourceResource instanceof IFile && sourcePath.endsWith( ".java" ) )
             {
                 logger.warn( "Moving Java file without refactoring - references will not be updated. Consider using refactorMoveJavaType instead." );
             }
 
-            // Get or create the target folder
             IFolder targetFolder = project.getFolder( normalizedTarget );
             if ( !targetFolder.exists() )
             {
                 ResourceUtilities.createFolderHierarchy( targetFolder );
             }
 
-            // Close the editor if moving a file that is open
-            if ( sourceResource instanceof IFile )
+            // Close the editor on the source: once moved, it would show content that
+            // is no longer at that address.
+            if ( sourceResource instanceof IFile sourceFile )
             {
-                IFile sourceFile = (IFile) sourceResource;
                 sync.syncExec( () -> {
                     IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
                     if ( page != null )
@@ -2360,45 +2040,52 @@ public class CodeEditingService
                 } );
             }
 
-            // Build the destination path
             String resourceName = sourceResource.getName();
             IPath destinationPath = targetFolder.getFullPath().append( resourceName );
 
-            // Check if destination already exists
             IResource existingResource = root.findMember( destinationPath );
             if ( existingResource != null && existingResource.exists() )
             {
                 throw new RuntimeException( "Error: A resource named '" + resourceName + "' already exists at the destination." );
             }
 
-            // Perform the move
-            sourceResource.move( destinationPath, IResource.FORCE, new NullProgressMonitor() );
+            ResourceVersion before = ResourceVersion.of( sourceResource );
+            IPath previousPath = sourceResource.getFullPath();
 
-            // Refresh the affected containers
+            sourceResource.move( destinationPath, IResource.FORCE | IResource.KEEP_HISTORY, new NullProgressMonitor() );
+
             sourceResource.getParent().refreshLocal( IResource.DEPTH_ONE, null );
             targetFolder.refreshLocal( IResource.DEPTH_ONE, null );
+            // The old address no longer holds anything, so nothing may still be
+            // served from the cache under it.
+            resourceCache.resourceChanged( previousPath );
 
-            // If moved a file, open it in the editor
+            // Two entries: the address that no longer holds anything, so a caller
+            // holding it learns not to re-read it, and the one that now does.
+            List<AffectedResource> affected = List.of(
+                    AffectedResource.of( sourceResource, ChangeKind.DELETED ),
+                    AffectedResource.of( root.findMember( destinationPath ), ChangeKind.MOVED ) );
+
             if ( sourceResource instanceof IFile )
             {
                 IFile newFile = root.getFile( destinationPath );
-                sync.asyncExec( () -> {
-                    if ( newFile.exists() )
-                    {
-                        safeOpenEditor( newFile );
-                        revealLineInEditor( newFile, 1 );
-                    }
-                } );
+                EditSynchronization synchronization = synchronizeAfterEdit( newFile, 1, null );
+                List<Diagnostic> diagnostics = new ArrayList<>();
+                EditorReveal reveal = describeReveal( newFile, new ContentRange( 1, 1, 1, 1 ), diagnostics );
+                return resourceRelocated( newFile, before, affected, reveal,
+                        synchronization.workspaceState(), diagnostics );
             }
 
-            String newPath = normalizedTarget + "/" + resourceName;
-            return "Success: Resource '" + sourcePath + "' moved to '" + newPath + "' in project '" + projectName + "'.";
+            IResource moved = root.findMember( destinationPath );
+            return resourceRelocated( moved, before, affected, EditorReveal.none(),
+                    new WorkspaceSync( true, false, "not-applicable" ), Diagnostic.none() );
         }
         catch ( CoreException e )
         {
             throw new RuntimeException( "Error during move: " + ExceptionUtils.getRootCauseMessage( e ), e );
         }
     }
+
 
     /**
      * Finds a package fragment in the Java project.
@@ -2443,45 +2130,30 @@ public class CodeEditingService
         throw new RuntimeException( "Error: No source folder found in project to create package '" + packageName + "'." );
     }
 
-    public String deleteFile( String projectName, String filePath )
+    /**
+     * Deletes a file.
+     * <p>
+     * A deletion cannot go through {@link #applyTextEdits}: there is no document left
+     * to place a range in, and no version afterwards. It keeps its own mechanism -
+     * {@link IFile#delete} with {@link IResource#KEEP_HISTORY}, so the content stays
+     * recoverable - and returns an {@link EditResult} only so that a caller branches
+     * on one shape whatever it asked for.
+     */
+    public EditResult deleteFile( String projectName, String filePath )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
+            String removed = ResourceUtilities.readFileContent( file );
+            ContentRange oldRange = ContentRange.wholeDocument( new Document( removed ) );
 
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Close the editor if the file is open
+            // Close the editor first: leaving one open on a resource that no longer
+            // exists leaves the user looking at content that is gone.
             sync.syncExec( () -> {
                 IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
                 if ( page != null )
@@ -2494,286 +2166,310 @@ public class CodeEditingService
                 }
             } );
 
-            // Delete the file
-            file.delete( true, null );
+            boolean cached = resourceCache.get( file ).isPresent();
 
-            // Refresh the parent container
+            // KEEP_HISTORY so an agent-deleted file stays recoverable from Eclipse's
+            // local history; the plain delete( boolean, .. ) overload keeps nothing.
+            file.delete( IResource.FORCE | IResource.KEEP_HISTORY, null );
+
             IContainer parent = file.getParent();
             parent.refreshLocal( IResource.DEPTH_ONE, null );
+            resourceCache.resourceChanged( file.getFullPath() );
 
-            return "Success: File '" + filePath + "' deleted from project '" + projectName + "'.";
+            IFileState undoState = currentHistoryState( file );
+            AppliedEdit applied = new AppliedEdit( oldRange, new ContentRange( 1, 1, 1, 1 ), 0, removed.length() );
+
+            return new EditResult(
+                    EditStatus.APPLIED,
+                    file.getProject().getName(),
+                    file.getProjectRelativePath().toString(),
+                    before,
+                    ResourceVersion.UNKNOWN,
+                    List.of( applied ),
+                    UnifiedDiffs.diff( removed, filePath, "", filePath, UnifiedDiffs.DEFAULT_CONTEXT_LINES ),
+                    List.of( AffectedResource.of( file, ChangeKind.DELETED ) ),
+                    EditorReveal.none(),
+                    undoState != null ? undoState.getModificationTime() : EditResult.NO_UNDO_STATE,
+                    new WorkspaceSync( true, cached, "not-applicable" ),
+                    Diagnostic.none() );
         }
-        catch ( CoreException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
 
-    public String replaceFileContent( String projectName, String filePath, String content )
+
+    /**
+     * The line delimiter Eclipse is configured to write in this project.
+     *
+     * @param projectName may be null or blank to ask the workspace rather than a
+     *            project
+     */
+    public LineDelimiterPreference getLineDelimiterPreference( String projectName )
+    {
+        if ( projectName == null || projectName.isBlank() )
+        {
+            return LineDelimiterPreference.of( null );
+        }
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+        return LineDelimiterPreference.of( project.exists() ? project : null );
+    }
+
+    /**
+     * Rewrites a file so every line ends with the delimiter Eclipse is configured to
+     * use, leaving the text itself untouched.
+     * <p>
+     * A file with mixed delimiters is not a cosmetic problem. {@code applyPatch} splits
+     * on any delimiter and rejoins with one, so patching such a file rewrites every
+     * line and buries a three-line change in a whole-file diff; and a search that
+     * counts characters to find a line lands in a different place depending on which
+     * delimiter it met. Normalising once makes both behave.
+     * <p>
+     * The target comes from the preference rather than from the file's own majority
+     * delimiter, so the result matches what the Java editor would write - see
+     * {@link LineDelimiterPreference}. A file that is already consistent with it is
+     * left alone and reported as {@code APPLIED} with an empty diff and no affected
+     * resource, because nothing was written.
+     *
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what would change without writing
+     */
+    public EditResult normalizeLineDelimiters( String projectName, String filePath,
+                                               long expectedModificationStamp, boolean preview )
+    {
+        Objects.requireNonNull( projectName );
+        Objects.requireNonNull( filePath );
+
+        IFile file = resolveEditableFile( projectName, filePath );
+
+        try
+        {
+            String original = ResourceUtilities.readFileContent( file );
+            String target = getLineDelimiterPreference( projectName ).delimiter();
+            String normalized = withLineDelimiter( original, target );
+
+            if ( original.equals( normalized ) )
+            {
+                // Not a diagnostic: being already correct is the outcome the caller
+                // wanted, and a no-op that reports a fault invites a pointless retry.
+                return unchanged( file );
+            }
+
+            return replaceFileContent( projectName, filePath, normalized, expectedModificationStamp, preview );
+        }
+        catch ( CoreException | IOException e )
+        {
+            return internalFailure( file, e );
+        }
+    }
+
+    /**
+     * Rewrites every line terminator as {@code delimiter}, preserving the text and
+     * whether the file ends with a terminator at all.
+     * <p>
+     * The split is done by {@link IDocument}'s line tracker, which already knows
+     * {@code \n}, {@code \r\n} and a lone {@code \r} and mixtures of them. A regex on
+     * {@code \R} would also match a form feed and a few other Unicode separators, and
+     * would silently turn them into line breaks.
+     */
+    private static String withLineDelimiter( String content, String delimiter )
+    {
+        IDocument document = new Document( content );
+        StringBuilder out = new StringBuilder( content.length() );
+        int lines = document.getNumberOfLines();
+
+        for ( int line = 0; line < lines; line++ )
+        {
+            try
+            {
+                IRegion region = document.getLineInformation( line );
+                out.append( document.get( region.getOffset(), region.getLength() ) );
+                // Null for the last line when the file does not end with a terminator,
+                // which is exactly when none should be added.
+                if ( document.getLineDelimiter( line ) != null )
+                {
+                    out.append( delimiter );
+                }
+            }
+            catch ( BadLocationException e )
+            {
+                // The tracker gave us the line count; asking it for those lines cannot
+                // be out of range.
+                throw new IllegalStateException( "Line " + line + " vanished from its own document", e );
+            }
+        }
+        return out.toString();
+    }
+
+    /** A write that was not needed. Nothing changed, so nothing is reported as changed. */
+    private EditResult unchanged( IFile file )
+    {
+        ResourceVersion version = ResourceVersion.of( file );
+        return new EditResult(
+                EditStatus.APPLIED,
+                file.getProject().getName(),
+                file.getProjectRelativePath().toString(),
+                version,
+                version,
+                List.of(),
+                "",
+                List.of(),
+                EditorReveal.none(),
+                EditResult.NO_UNDO_STATE,
+                new WorkspaceSync( true, false, "not-applicable" ),
+                Diagnostic.none() );
+    }
+
+    /**
+     * Replaces the whole content of a file.
+     * <p>
+     * Expressed as one replacement of the whole document and applied by
+     * {@link #applyTextEdits}, so a wholesale rewrite is written the same way, and
+     * reported in the same shape, as a one-word change.
+     *
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what would change without writing
+     */
+    public EditResult replaceFileContent( String projectName, String filePath, String content,
+                                          long expectedModificationStamp, boolean preview )
     {
         Objects.requireNonNull( projectName );
         Objects.requireNonNull( filePath );
         Objects.requireNonNull( content );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
+        IFile file = resolveEditableFile( projectName, filePath );
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
+            String original = ResourceUtilities.readFileContent( file );
+            IDocument document = new Document( original );
+            TextEditRequest edit = new TextEditRequest( ContentRange.wholeDocument( document ), original, content );
 
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Backup the file before modification
-            backupFile( file );
-
-            // Replace the file content
-            file.setContents( ResourceUtilities.toFileContent( file, content ), IResource.FORCE, null );
-
-            String workspaceState = synchronizeAfterEdit( file, 1 );
-
-            return "Success: Content of file '" + filePath + "' replaced in project '" + projectName + "'." + workspaceState;
+            return applyTextEdits( projectName, filePath, expectedModificationStamp, List.of( edit ), preview );
         }
-        catch ( CoreException | IOException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
 
-    public String deleteLinesInFile( String projectName, String filePath, int startLine, int endLine )
-    {
-        Objects.requireNonNull( projectName );
-        Objects.requireNonNull( filePath );
-
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
-        if ( startLine < 1 )
-        {
-            throw new IllegalArgumentException( "Error: Start line must be at least 1." );
-        }
-        if ( endLine < startLine )
-        {
-            throw new IllegalArgumentException( "Error: End line must be greater than or equal to start line." );
-        }
-
-        try
-        {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Backup the file before modification
-            backupFile( file );
-
-            // Read the file content
-            var lines = ResourceUtilities.readFileLinesWithTerminators( file );
-
-            // Validate line numbers
-            if ( startLine > lines.size() )
-            {
-                throw new IllegalArgumentException( "Error: Start line " + startLine + " is beyond the file length (" + lines.size() + " lines)." );
-            }
-            if ( endLine > lines.size() )
-            {
-                throw new IllegalArgumentException( "Error: End line " + endLine + " is beyond the file length (" + lines.size() + " lines)." );
-            }
-
-            // Build new content without the deleted lines
-            StringBuilder newContent = new StringBuilder();
-            for ( int i = 0; i < lines.size(); i++ )
-            {
-                int lineNum = i + 1; // Convert to 1-based
-                if ( lineNum < startLine || lineNum > endLine )
-                {
-                    newContent.append( lines.get( i ) );
-                }
-            }
-
-            // Write the new content back to the file
-            file.setContents( ResourceUtilities.toFileContent( file, newContent.toString() ), IResource.FORCE, null );
-
-            String workspaceState = synchronizeAfterEdit( file, startLine );
-
-            int deletedCount = endLine - startLine + 1;
-            return "Success: Deleted " + deletedCount + " line(s) (lines " + startLine + " to " + endLine + ") from file '" + filePath + "' in project '"
-                    + projectName + "'." + workspaceState;
-        }
-        catch ( CoreException | IOException e )
-        {
-            throw new RuntimeException( e );
-        }
-    }
 
     /**
-     * Applies a unified diff patch to a file in the specified project. Parses
-     * the diff hunks and applies them to produce the modified file content.
-     * Optionally shows Eclipse's Apply Patch wizard dialog for user review.
+     * Deletes a range of whole lines.
+     * <p>
+     * A deletion is a replacement of those lines with nothing, so it goes through
+     * {@link #applyTextEdits} like every other text change: one write, one
+     * local-history entry, and the same optional staleness check.
      *
-     * @param projectName
-     *            The name of the project containing the file
-     * @param filePath
-     *            The path to the file relative to the project root
-     * @param patch
-     *            The unified diff content to apply
-     * @param showDialog
-     *            Whether to show Eclipse's Apply Patch wizard dialog
-     * @return A status message indicating success or failure
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what would change without writing
      */
-    public String applyPatch( String projectName, String filePath, String patch, boolean showDialog )
+    public EditResult deleteLinesInFile( String projectName, String filePath, int startLine, int endLine,
+                                         long expectedModificationStamp, boolean preview )
+    {
+        return replaceLineRange( projectName, filePath, "", startLine, endLine, expectedModificationStamp, preview );
+    }
+
+
+    /**
+     * Applies a unified diff to a file.
+     * <p>
+     * The patch is parsed and applied in memory by this class's own hunk machinery,
+     * which is deliberately kept rather than replaced by platform code - see
+     * {@code docs/structured-output-rollout-plan.md} for why. What changed is where
+     * the result goes: the patched content is written through
+     * {@link #applyTextEdits} as one minimal replacement, so a patch shares the
+     * single write path, the optional staleness check, and the one local-history
+     * entry with every other editing tool.
+     *
+     * @param showDialog when true, hands the patch to Eclipse's Apply Patch wizard
+     *            for the user to review and writes nothing here, so the result is a
+     *            {@link EditStatus#PREVIEW}
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, reports what the patch would change without writing
+     */
+    public EditResult applyPatch( String projectName, String filePath, String patch, boolean showDialog,
+                                  long expectedModificationStamp, boolean preview )
     {
         Objects.requireNonNull( projectName, "Project name cannot be null" );
         Objects.requireNonNull( filePath, "File path cannot be null" );
         Objects.requireNonNull( patch, "Patch content cannot be null" );
 
-        if ( projectName.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: Project name cannot be empty." );
-        }
-        if ( filePath.isEmpty() )
-        {
-            throw new IllegalArgumentException( "Error: File path cannot be empty." );
-        }
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
+
         if ( patch.isBlank() )
         {
-            throw new IllegalArgumentException( "Error: Patch content cannot be empty." );
+            return EditResult.rejected( file, before,
+                    Diagnostic.fatal( DiagnosticCode.INVALID_RANGE, "The patch is empty." ) );
         }
 
         try
         {
-            // Get the project and file
-            IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
-            IProject project = root.getProject( projectName );
-
-            if ( !project.exists() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
-            }
-            if ( !project.isOpen() )
-            {
-                throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
-            }
-
-            IPath path = IPath.fromPath( Path.of( filePath ) );
-            IFile file = project.getFile( path );
-
-            if ( !file.exists() )
-            {
-                throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
-            }
-
-            aiIgnoreService.assertAccessAllowed( file );
-
-            // Refresh the editor if the file is open
-            sync.syncExec( () -> {
-                safeOpenEditor( file );
-                refreshEditor( file );
-            } );
-
             String originalContent = ResourceUtilities.readFileContent( file );
             String lineDelimiter = detectLineDelimiter( originalContent );
             boolean hasTrailingDelimiter = endsWithLineDelimiter( originalContent );
-            List<String> originalLines = splitLines( originalContent );
 
-            // All hunks are validated and applied in memory before the file is touched.
-            List<String> patchedLines = applyUnifiedDiff( originalLines, patch );
-            String patchedContentString = String.join( lineDelimiter, patchedLines );
-            if ( hasTrailingDelimiter && !patchedLines.isEmpty() )
+            String patchedContent;
+            try
             {
-                patchedContentString += lineDelimiter;
+                // Every hunk is validated and applied in memory before the file is touched.
+                List<String> patchedLines = applyUnifiedDiff( splitLines( originalContent ), patch );
+                patchedContent = String.join( lineDelimiter, patchedLines );
+                if ( hasTrailingDelimiter && !patchedLines.isEmpty() )
+                {
+                    patchedContent += lineDelimiter;
+                }
             }
-
+            catch ( IllegalArgumentException e )
+            {
+                // The patch itself is malformed. Sending it again unchanged cannot help.
+                return EditResult.rejected( file, before,
+                        Diagnostic.fatal( DiagnosticCode.INVALID_RANGE, e.getMessage() ) );
+            }
+            catch ( RuntimeException e )
+            {
+                // A hunk's context is not in the file. Re-reading and recomputing the
+                // patch is exactly what fixes that, so it is retryable rather than fatal.
+                return EditResult.rejected( file, before,
+                        Diagnostic.retryable( DiagnosticCode.TEXT_NOT_FOUND, e.getMessage() ) );
+            }
 
             if ( showDialog )
             {
-                // Show the Apply Patch wizard dialog on the UI thread
-                // asynchronously
-                // so the MCP tool call returns immediately without waiting for
-                // user interaction
-                var fullPatch = buildFullUnifiedDiff( filePath, patch );
+                // The wizard opens asynchronously so the call returns without waiting
+                // for the user. Nothing is written here: whether the patch lands is the
+                // user's decision, which is what PREVIEW says.
+                String fullPatch = buildFullUnifiedDiff( filePath, patch );
                 sync.asyncExec( () -> {
                     var patchHelper = new com.github.gradusnikov.eclipse.assistai.view.ApplyPatchWizardHelper();
                     patchHelper.showApplyPatchWizardDialog( fullPatch, filePath, projectName );
                 } );
-                return "Success: Apply Patch dialog shown for file '" + filePath + "' in project '" + projectName
-                        + "'. The user will review and apply the patch via the dialog.";
+                return new EditResult( EditStatus.PREVIEW,
+                        file.getProject().getName(), file.getProjectRelativePath().toString(),
+                        before, before, List.of(),
+                        UnifiedDiffs.diff( originalContent, filePath, patchedContent, filePath,
+                                UnifiedDiffs.DEFAULT_CONTEXT_LINES ),
+                        List.of(),
+                        EditorReveal.none(), EditResult.NO_UNDO_STATE, null, Diagnostic.none() );
             }
 
-            // Generate a diff for the response (comparing original to patched)
-            String diff = generateCodeDiff( projectName, filePath, patchedContentString, 3 );
+            IDocument document = new Document( originalContent );
+            TextEditRequest edit = minimalReplacement( document, originalContent, patchedContent );
 
-            backupFile( file );
-            // Write back to the file
-            try (ByteArrayInputStream source = new ByteArrayInputStream( patchedContentString.getBytes( Charset.forName( file.getCharset() ) ) ))
-            {
-                file.setContents( source, IResource.FORCE, null );
-            }
-
-            var hunks = parseHunks( patch );
-            final int firstHunkLine = hunks.isEmpty() ? 1 : hunks.get( 0 ).originalStart;
-            String workspaceState = synchronizeAfterEdit( file, firstHunkLine );
-
-            // Compute affected line range from hunks for the response
-            int firstLine = hunks.stream().mapToInt( h -> h.originalStart ).min().orElse( 1 );
-            int lastLine = hunks.stream().mapToInt( h -> h.originalStart + h.originalCount ).max().orElse( firstLine );
-
-            return "Success: Patch applied to file '" + filePath + "' in project '" + projectName + "'.\n" + "Affected lines: " + firstLine + "-" + lastLine
-                    + "\n" + "Changes:\n```diff\n" + diff + "\n```" + workspaceState;
+            return applyTextEdits( projectName, filePath, expectedModificationStamp, List.of( edit ), preview );
         }
-        catch ( CoreException | IOException e )
+        catch ( CoreException | IOException | BadLocationException e )
         {
-            throw new RuntimeException( e );
+            return internalFailure( file, e );
         }
     }
+
 
     private List<String> splitLines( String content )
     {
@@ -3233,44 +2929,749 @@ public class CodeEditingService
         return indent;
     }
 
-    private void backupFile( IFile file ) throws CoreException, IOException
+    /**
+     * Applies a set of replacements to a file as one transaction.
+     * <p>
+     * The change itself is performed by the platform's {@link org.eclipse.text.edits.TextEdit}
+     * tree rather than by arithmetic here, which is what makes it atomic: a
+     * {@link MultiTextEdit} rejects overlapping children outright, shifts later edits
+     * as earlier ones change the length, and applies all of them or none. The file is
+     * written once, so the whole batch produces exactly one local-history entry and
+     * one undo point.
+     *
+     * @param expectedModificationStamp the stamp the caller read, or
+     *            {@link IResource#NULL_STAMP} to skip the staleness check
+     * @param preview when true, computes the result and the diff without writing
+     */
+    public EditResult applyTextEdits( String projectName, String filePath, long expectedModificationStamp,
+                                      List<TextEditRequest> requestedEdits, boolean preview )
     {
-        file.refreshLocal( IResource.DEPTH_ZERO, null );
-        byte[] content;
-        try ( var input = file.getContents() )
+        Objects.requireNonNull( projectName );
+        Objects.requireNonNull( filePath );
+        Objects.requireNonNull( requestedEdits );
+
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
+
+        if ( !before.matches( expectedModificationStamp ) )
         {
-            content = input.readAllBytes();
+            return EditResult.versionConflict( file, before, expectedModificationStamp );
         }
 
-        Deque<byte[]> backups = editBackups.computeIfAbsent( file.getFullPath(), ignored -> new ArrayDeque<>() );
-        synchronized ( backups )
+        if ( requestedEdits.isEmpty() )
         {
-            backups.addFirst( content );
-            while ( backups.size() > MAX_EDIT_BACKUPS )
+            return EditResult.rejected( file, before, Diagnostic.fatal(
+                    DiagnosticCode.INVALID_RANGE, "No edits were supplied." ) );
+        }
+
+        try
+        {
+            String original = ResourceUtilities.readFileContent( file );
+            IDocument document = new Document( original );
+
+            MultiTextEdit root = new MultiTextEdit();
+            List<ContentRange> oldRanges = new ArrayList<>();
+            List<ReplaceEdit> children = new ArrayList<>();
+
+            for ( TextEditRequest requested : requestedEdits )
             {
-                backups.removeLast();
+                IRegion region;
+                try
+                {
+                    region = requested.range().toRegion( document );
+                }
+                catch ( BadLocationException e )
+                {
+                    return EditResult.rejected( file, before, Diagnostic.fatal(
+                            DiagnosticCode.INVALID_RANGE,
+                            "Range " + requested.range() + " is outside " + filePath + "." ) );
+                }
+
+                if ( requested.expectedText() != null )
+                {
+                    String actual = document.get( region.getOffset(), region.getLength() );
+                    if ( !actual.equals( requested.expectedText() ) )
+                    {
+                        return EditResult.rejected( file, before, Diagnostic.retryable(
+                                DiagnosticCode.TEXT_NOT_FOUND,
+                                "Range " + requested.range() + " holds " + quoteForMessage( actual )
+                                        + ", not the expected " + quoteForMessage( requested.expectedText() )
+                                        + ". Re-read the resource and recompute the edit." ) );
+                    }
+                }
+
+                ReplaceEdit child = new ReplaceEdit( region.getOffset(), region.getLength(), requested.replacement() );
+                oldRanges.add( ContentRange.of( document, region.getOffset(), region.getLength() ) );
+                children.add( child );
+                root.addChild( child );
             }
+
+            try
+            {
+                // UPDATE_REGIONS leaves each child reporting where it ended up, which
+                // is how the new ranges below are read back.
+                root.apply( document, org.eclipse.text.edits.TextEdit.UPDATE_REGIONS );
+            }
+            catch ( MalformedTreeException e )
+            {
+                return EditResult.rejected( file, before, Diagnostic.fatal(
+                        DiagnosticCode.OVERLAPPING_EDITS,
+                        "The requested edits overlap, so they cannot be applied as one transaction: "
+                                + e.getMessage() ) );
+            }
+            catch ( BadLocationException e )
+            {
+                return EditResult.rejected( file, before, Diagnostic.fatal(
+                        DiagnosticCode.INVALID_RANGE, "An edit fell outside " + filePath + ": " + e.getMessage() ) );
+            }
+
+            String updated = document.get();
+            String diff = UnifiedDiffs.diff( original, filePath, updated, filePath,
+                    UnifiedDiffs.DEFAULT_CONTEXT_LINES );
+
+            List<AppliedEdit> applied = new ArrayList<>();
+            for ( int i = 0; i < children.size(); i++ )
+            {
+                ReplaceEdit child = children.get( i );
+                ContentRange oldRange = oldRanges.get( i );
+                ContentRange newRange = ContentRange.of( document, child.getOffset(), child.getLength() );
+                applied.add( new AppliedEdit( oldRange, newRange, child.getLength(),
+                        requestedEdits.get( i ).range().isEmpty() ? 0 : oldRangeLength( oldRange, document ) ) );
+            }
+
+            ContentRange combined = combinedRange( applied );
+
+            if ( preview )
+            {
+                // Nothing was written, so nothing is affected: the diff says what would
+                // change, and affectedResources says what did.
+                return new EditResult( EditStatus.PREVIEW,
+                        file.getProject().getName(), file.getProjectRelativePath().toString(),
+                        before, before, applied, diff, List.of(),
+                        EditorReveal.none(), EditResult.NO_UNDO_STATE, null, Diagnostic.none() );
+            }
+
+            try ( ByteArrayInputStream source = new ByteArrayInputStream(
+                    updated.getBytes( Charset.forName( file.getCharset() ) ) ) )
+            {
+                file.setContents( source, IResource.FORCE | IResource.KEEP_HISTORY, null );
+            }
+
+            // After the write: this is the content the batch replaced.
+            IFileState undoState = currentHistoryState( file );
+            EditSynchronization synchronization = synchronizeAfterEdit( file, combined.startLine(), undoState );
+
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            EditorReveal reveal = describeReveal( file, combined, diagnostics );
+
+            return new EditResult(
+                    diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS,
+                    file.getProject().getName(),
+                    file.getProjectRelativePath().toString(),
+                    before,
+                    synchronization.version(),
+                    applied,
+                    diff,
+                    List.of( AffectedResource.of( file, ChangeKind.MODIFIED ) ),
+                    reveal,
+                    undoState != null ? undoState.getModificationTime() : EditResult.NO_UNDO_STATE,
+                    synchronization.workspaceState(),
+                    diagnostics );
+        }
+        catch ( CoreException | IOException | BadLocationException e )
+        {
+            logger.error( e.getMessage(), e );
+            return EditResult.rejected( file, before, Diagnostic.fatal(
+                    DiagnosticCode.INTERNAL_ERROR, ExceptionUtils.getRootCauseMessage( e ) ) );
         }
     }
 
-    private byte[] takeEditBackup( IFile file )
+    /**
+     * Replaces occurrences of a literal string, refusing to guess when there is more
+     * than one.
+     * <p>
+     * Matches are located with {@link FindReplaceDocumentAdapter}, the same search the
+     * editor's Find/Replace uses, rather than by {@link String#indexOf}. The previous
+     * behaviour was {@code String.replace}, which silently edited every occurrence and
+     * reported only that "the string was replaced" - so a caller asking to change one
+     * line could change five without ever learning it.
+     *
+     * @param occurrence which match to act on; {@link Occurrence#UNIQUE} rejects
+     *            ambiguity instead of resolving it
+     * @param occurrenceIndex the 1-based match to take when {@code occurrence} is
+     *            {@link Occurrence#INDEX}
+     */
+    public EditResult replaceString( String projectName, String filePath, String oldString, String newString,
+                                     Integer startLine, Integer endLine, long expectedModificationStamp,
+                                     Occurrence occurrence, Integer occurrenceIndex, boolean preview )
     {
-        Deque<byte[]> backups = editBackups.get( file.getFullPath() );
-        if ( backups == null )
+        Objects.requireNonNull( oldString, "oldString" );
+        if ( oldString.isEmpty() )
+        {
+            throw new IllegalArgumentException( "Error: oldString cannot be empty." );
+        }
+        String replacement = newString == null ? "" : newString;
+        Occurrence mode = occurrence == null ? Occurrence.UNIQUE : occurrence;
+
+        IFile file = resolveEditableFile( projectName, filePath );
+        ResourceVersion before = ResourceVersion.of( file );
+
+        if ( !before.matches( expectedModificationStamp ) )
+        {
+            return EditResult.versionConflict( file, before, expectedModificationStamp );
+        }
+
+        try
+        {
+            IDocument document = new Document( ResourceUtilities.readFileContent( file ) );
+            List<IRegion> matches = findOccurrences( document, oldString, startLine, endLine );
+
+            if ( matches.isEmpty() )
+            {
+                return EditResult.rejected( file, before, Diagnostic.fatal(
+                        DiagnosticCode.TEXT_NOT_FOUND,
+                        "The specified string was not found in the file"
+                                + describeSearchRange( startLine, endLine ) + ": "
+                                + quoteForMessage( oldString ) + "." ) );
+            }
+
+            List<IRegion> selected = selectOccurrences( matches, mode, occurrenceIndex );
+            if ( selected == null )
+            {
+                return EditResult.rejected( file, before, Diagnostic.fatal(
+                        DiagnosticCode.AMBIGUOUS_MATCH,
+                        matches.size() + " occurrences of " + quoteForMessage( oldString ) + " in " + filePath
+                                + " at " + describeMatches( document, matches )
+                                + ". Narrow the search with startLine/endLine, or pass occurrence="
+                                + "FIRST, LAST, INDEX or ALL to say which you mean." ) );
+            }
+
+            List<TextEditRequest> edits = new ArrayList<>();
+            for ( IRegion match : selected )
+            {
+                edits.add( new TextEditRequest(
+                        ContentRange.of( document, match.getOffset(), match.getLength() ),
+                        oldString,
+                        replacement ) );
+            }
+
+            return applyTextEdits( projectName, filePath, expectedModificationStamp, edits, preview );
+        }
+        catch ( CoreException | IOException | BadLocationException e )
+        {
+            logger.error( e.getMessage(), e );
+            return EditResult.rejected( file, before, Diagnostic.fatal(
+                    DiagnosticCode.INTERNAL_ERROR, ExceptionUtils.getRootCauseMessage( e ) ) );
+        }
+    }
+
+    /**
+     * Every literal match of {@code needle}, optionally confined to a line range.
+     */
+    private List<IRegion> findOccurrences( IDocument document, String needle, Integer startLine, Integer endLine )
+            throws BadLocationException
+    {
+        int totalLines = document.getNumberOfLines();
+
+        // A start line past the end must be refused, not clamped: clamping would widen
+        // the search to lines the caller deliberately excluded and edit them.
+        if ( startLine != null && startLine > totalLines )
+        {
+            throw new RuntimeException( "Error: Start line " + startLine
+                    + " is beyond the end of the file (total lines: " + totalLines + ")." );
+        }
+        if ( startLine != null && endLine != null && startLine > endLine )
+        {
+            throw new RuntimeException( "Error: Start line cannot be greater than end line." );
+        }
+
+        int searchStart = 0;
+        int searchEnd = document.getLength();
+        if ( startLine != null )
+        {
+            searchStart = document.getLineOffset( Math.max( 1, startLine ) - 1 );
+        }
+        if ( endLine != null )
+        {
+            int line = Math.min( endLine, totalLines );
+            if ( line >= 1 )
+            {
+                searchEnd = document.getLineOffset( line - 1 ) + document.getLineLength( line - 1 );
+            }
+        }
+
+        FindReplaceDocumentAdapter finder = new FindReplaceDocumentAdapter( document );
+        List<IRegion> matches = new ArrayList<>();
+        int from = searchStart;
+        while ( from <= searchEnd )
+        {
+            IRegion match = finder.find( from, needle, true, true, false, false );
+            if ( match == null || match.getOffset() + match.getLength() > searchEnd )
+            {
+                break;
+            }
+            matches.add( match );
+            // A zero-length match cannot happen for a non-empty literal, but guard so a
+            // future regex mode cannot spin here.
+            from = match.getOffset() + Math.max( 1, match.getLength() );
+        }
+        return matches;
+    }
+
+    /**
+     * @return the matches to edit, or null when the request is ambiguous and the
+     *         caller must choose
+     */
+    private List<IRegion> selectOccurrences( List<IRegion> matches, Occurrence mode, Integer occurrenceIndex )
+    {
+        switch ( mode )
+        {
+            case UNIQUE:
+                return matches.size() == 1 ? matches : null;
+            case FIRST:
+                return List.of( matches.get( 0 ) );
+            case LAST:
+                return List.of( matches.get( matches.size() - 1 ) );
+            case ALL:
+                return matches;
+            case INDEX:
+                if ( occurrenceIndex == null || occurrenceIndex < 1 || occurrenceIndex > matches.size() )
+                {
+                    throw new IllegalArgumentException( "Error: occurrenceIndex must be between 1 and "
+                            + matches.size() + "." );
+                }
+                return List.of( matches.get( occurrenceIndex - 1 ) );
+            default:
+                return null;
+        }
+    }
+
+    private String describeSearchRange( Integer startLine, Integer endLine )
+    {
+        if ( startLine == null && endLine == null )
+        {
+            return "";
+        }
+        return " within lines " + ( startLine == null ? 1 : startLine ) + "-"
+                + ( endLine == null ? "end" : endLine );
+    }
+
+    /** Lists where the matches are, so the caller can pick one without re-reading. */
+    private String describeMatches( IDocument document, List<IRegion> matches ) throws BadLocationException
+    {
+        StringBuilder sb = new StringBuilder();
+        int shown = Math.min( matches.size(), 10 );
+        for ( int i = 0; i < shown; i++ )
+        {
+            ContentRange range = ContentRange.of( document, matches.get( i ).getOffset(), matches.get( i ).getLength() );
+            sb.append( i == 0 ? "" : ", " ).append( "#" ).append( i + 1 ).append( " " ).append( range );
+        }
+        if ( matches.size() > shown )
+        {
+            sb.append( ", and " ).append( matches.size() - shown ).append( " more" );
+        }
+        return sb.toString();
+    }
+
+    /** The span covering every applied edit, so one reveal shows the whole change. */
+    private ContentRange combinedRange( List<AppliedEdit> applied )
+    {
+        if ( applied.isEmpty() )
+        {
+            return new ContentRange( 1, 1, 1, 1 );
+        }
+        ContentRange first = applied.get( 0 ).newRange();
+        int startLine = first.startLine();
+        int startColumn = first.startColumn();
+        int endLine = first.endLine();
+        int endColumn = first.endColumn();
+        for ( AppliedEdit edit : applied )
+        {
+            ContentRange range = edit.newRange();
+            if ( range.startLine() < startLine || ( range.startLine() == startLine && range.startColumn() < startColumn ) )
+            {
+                startLine = range.startLine();
+                startColumn = range.startColumn();
+            }
+            if ( range.endLine() > endLine || ( range.endLine() == endLine && range.endColumn() > endColumn ) )
+            {
+                endLine = range.endLine();
+                endColumn = range.endColumn();
+            }
+        }
+        return new ContentRange( startLine, startColumn, endLine, endColumn );
+    }
+
+    private int oldRangeLength( ContentRange range, IDocument document )
+    {
+        try
+        {
+            IRegion region = range.toRegion( document );
+            return region.getLength();
+        }
+        catch ( BadLocationException e )
+        {
+            return 0;
+        }
+    }
+
+    /**
+     * Brings the editor to the changed range and reports where it landed.
+     * <p>
+     * A reveal that fails is a warning, never a failure: the content is already
+     * written, and telling the caller the edit failed would invite a destructive retry.
+     */
+    private EditorReveal describeReveal( IFile file, ContentRange range, List<Diagnostic> diagnostics )
+    {
+        AtomicBoolean opened = new AtomicBoolean( false );
+        try
+        {
+            sync.syncExec( () -> {
+                safeOpenEditor( file );
+                revealLineInEditor( file, range.startLine() );
+                opened.set( true );
+            } );
+        }
+        catch ( RuntimeException e )
+        {
+            diagnostics.add( Diagnostic.fatal( DiagnosticCode.EDITOR_REVEAL_FAILED,
+                    "The edit was applied, but the editor could not be revealed: " + e.getMessage() ) );
+            return EditorReveal.none();
+        }
+        return new EditorReveal( opened.get(), range,
+                new EditorPosition( range.endLine(), range.endColumn() ) );
+    }
+
+    /** A short, single-line rendering of text for a diagnostic message. */
+    private static String quoteForMessage( String text )
+    {
+        String flattened = text.replace( "\r\n", "\\n" ).replace( "\n", "\\n" ).replace( "\t", "\\t" );
+        if ( flattened.length() > 60 )
+        {
+            flattened = flattened.substring( 0, 57 ) + "...";
+        }
+        return "\"" + flattened + "\"";
+    }
+
+    /**
+     * The offset at which a 1-based line starts. A line one past the last resolves to
+     * the end of the document, which is how an append is addressed.
+     */
+    private static int lineStartOffset( IDocument document, int line ) throws BadLocationException
+    {
+        if ( line >= 1 && line - 1 < document.getNumberOfLines() )
+        {
+            return document.getLineOffset( line - 1 );
+        }
+        return document.getLength();
+    }
+
+    /**
+     * The range covering lines {@code startLine} to {@code endLine} inclusive,
+     * together with the delimiter that ends {@code endLine}.
+     * <p>
+     * The delimiter has to be part of the range: leaving it out would splice the
+     * replacement onto the following line, and including it is what lets an empty
+     * replacement actually remove the lines rather than blank them.
+     */
+    private static ContentRange wholeLineRange( IDocument document, int startLine, int endLine ) throws BadLocationException
+    {
+        int start = lineStartOffset( document, startLine );
+        int end = lineStartOffset( document, endLine + 1 );
+        return ContentRange.of( document, start, Math.max( 0, end - start ) );
+    }
+
+    /**
+     * The number of lines the file actually holds.
+     * <p>
+     * {@link IDocument#getNumberOfLines()} counts the empty line that follows a
+     * trailing delimiter, which is not a line any caller of a line-based tool means
+     * when it says the file has n lines.
+     */
+    private static int contentLineCount( IDocument document ) throws BadLocationException
+    {
+        if ( document.getLength() == 0 )
+        {
+            return 0;
+        }
+        int lines = document.getNumberOfLines();
+        return document.getLineLength( lines - 1 ) == 0 ? lines - 1 : lines;
+    }
+
+    /**
+     * The smallest replacement that turns {@code original} into {@code updated}.
+     * <p>
+     * The common prefix and suffix are trimmed off, so a change to one part of a file
+     * is reported - and revealed in the editor - as that part rather than as a
+     * rewrite of everything.
+     */
+    private static TextEditRequest minimalReplacement( IDocument document, String original, String updated )
+            throws BadLocationException
+    {
+        int limit = Math.min( original.length(), updated.length() );
+        int prefix = 0;
+        while ( prefix < limit && original.charAt( prefix ) == updated.charAt( prefix ) )
+        {
+            prefix++;
+        }
+        int suffix = 0;
+        while ( suffix < limit - prefix
+                && original.charAt( original.length() - 1 - suffix ) == updated.charAt( updated.length() - 1 - suffix ) )
+        {
+            suffix++;
+        }
+        int length = original.length() - prefix - suffix;
+        return new TextEditRequest( ContentRange.of( document, prefix, length ),
+                original.substring( prefix, prefix + length ),
+                updated.substring( prefix, updated.length() - suffix ) );
+    }
+
+    /**
+     * The result of a change that created or moved a resource rather than editing
+     * text inside one.
+     * <p>
+     * Such a tool cannot go through {@link #applyTextEdits}: there is no single
+     * document whose ranges the change can be expressed in. It keeps its own
+     * mechanism and reports in the same shape only so a caller branches once - with
+     * no edits and no diff, because the content did not change, only where it lives.
+     *
+     * @param moved the resource as it stands now, which is what a caller addresses next
+     * @param affected every resource the change touched, {@code moved} among them.
+     *            Empty when the call changed nothing at all
+     */
+    private EditResult resourceRelocated( IResource moved, ResourceVersion before, List<AffectedResource> affected,
+                                          EditorReveal reveal, WorkspaceSync workspaceState, List<Diagnostic> diagnostics )
+    {
+        return new EditResult(
+                diagnostics.isEmpty() ? EditStatus.APPLIED : EditStatus.APPLIED_WITH_WARNINGS,
+                moved.getProject().getName(),
+                moved.getProjectRelativePath().toString(),
+                before,
+                ResourceVersion.of( moved ),
+                List.of(),
+                "",
+                affected,
+                reveal,
+                EditResult.NO_UNDO_STATE,
+                workspaceState,
+                diagnostics );
+    }
+
+    /**
+     * A refactoring's refusal to proceed, as a diagnostic rather than an exception.
+     * <p>
+     * A failed precondition is exactly the kind of failure a caller can act on - it
+     * says what about the code makes the refactoring unsafe - so it belongs in a
+     * field with a code, not in prose thrown out of the call.
+     *
+     * @return a rejection, or null when the refactoring may go ahead
+     */
+    private EditResult refusedPrecondition( IResource resource, RefactoringStatus status )
+    {
+        if ( status == null || !status.hasFatalError() )
         {
             return null;
         }
+        return EditResult.rejected( resource, ResourceVersion.of( resource ),
+                Diagnostic.fatal( DiagnosticCode.REFACTORING_PRECONDITION_FAILED,
+                        status.getMessageMatchingSeverity( RefactoringStatus.FATAL ) ) );
+    }
 
-        synchronized ( backups )
+    /** A rejection carrying a range the file cannot satisfy. */
+    private EditResult invalidRange( IFile file, String message )
+    {
+        return EditResult.rejected( file, ResourceVersion.of( file ),
+                Diagnostic.fatal( DiagnosticCode.INVALID_RANGE, message ) );
+    }
+
+    /**
+     * Checks a 1-based inclusive line range against the file.
+     * <p>
+     * Anything the file cannot satisfy is refused rather than clamped. A caller that
+     * names a range means that range: quietly widening or narrowing it edits lines
+     * the caller deliberately excluded, and says nothing about having done so.
+     *
+     * @return a rejection, or null when the range is usable
+     */
+    private EditResult validateLineRange( IFile file, String filePath, int startLine, int endLine, int lineCount )
+    {
+        if ( startLine < 1 )
         {
-            byte[] content = backups.pollFirst();
-            if ( backups.isEmpty() )
+            return invalidRange( file, "Start line must be at least 1, was " + startLine + "." );
+        }
+        if ( endLine < startLine )
+        {
+            return invalidRange( file, "End line " + endLine + " precedes start line " + startLine + "." );
+        }
+        if ( startLine > lineCount )
+        {
+            return invalidRange( file, "Start line " + startLine + " is beyond the end of the file: "
+                    + filePath + " has " + lineCount + " line(s)." );
+        }
+        if ( endLine > lineCount )
+        {
+            return invalidRange( file, "End line " + endLine + " is beyond the end of the file: "
+                    + filePath + " has " + lineCount + " line(s)." );
+        }
+        return null;
+    }
+
+    /** The rejection an unexpected failure inside an editing tool produces. */
+    private EditResult internalFailure( IFile file, Exception e )
+    {
+        logger.error( e.getMessage(), e );
+        return EditResult.rejected( file, ResourceVersion.of( file ),
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, ExceptionUtils.getRootCauseMessage( e ) ) );
+    }
+
+    /** What a refactoring is about to change, and which of it was there beforehand. */
+    private record PendingChanges( List<IResource> resources, Set<IPath> existedBefore )
+    {
+    }
+
+    /**
+     * The resources a refactoring is about to change, read out of its change tree.
+     * <p>
+     * Must be called <em>before</em> {@link Change#perform}: afterwards the tree has
+     * been replaced by the undo change and describes the reverse operation. It walks
+     * the leaves' {@link Change#getModifiedElement()} rather than asking
+     * {@link Change#getAffectedObjects()}, which is documented to return null whenever
+     * a change cannot work the set out - precisely the case where it would be needed.
+     */
+    private static PendingChanges pendingChanges( Change change )
+    {
+        LinkedHashMap<IPath, IResource> touched = new LinkedHashMap<>();
+        collectModifiedResources( change, touched );
+
+        Set<IPath> existed = new HashSet<>();
+        touched.forEach( ( path, resource ) -> {
+            if ( resource.exists() )
             {
-                editBackups.remove( file.getFullPath(), backups );
+                existed.add( path );
             }
-            return content;
+        } );
+        return new PendingChanges( List.copyOf( touched.values() ), existed );
+    }
+
+    private static void collectModifiedResources( Change change, LinkedHashMap<IPath, IResource> into )
+    {
+        if ( change == null )
+        {
+            return;
+        }
+        IResource resource = modifiedResource( change.getModifiedElement() );
+        if ( resource != null )
+        {
+            into.putIfAbsent( resource.getFullPath(), resource );
+        }
+        // A composite carries no element of its own, so its children are the answer.
+        if ( change instanceof CompositeChange composite )
+        {
+            for ( Change child : composite.getChildren() )
+            {
+                collectModifiedResources( child, into );
+            }
         }
     }
 
+    /** The workspace resource a change names, whether it names it as a Java element or not. */
+    private static IResource modifiedResource( Object element )
+    {
+        if ( element instanceof IResource resource )
+        {
+            return resource;
+        }
+        if ( element instanceof IJavaElement javaElement )
+        {
+            // Null for anything with no file behind it - a type inside a JAR.
+            return javaElement.getResource();
+        }
+        return null;
+    }
 
+    /**
+     * What a performed refactoring changed, in the form the result reports it.
+     * <p>
+     * Call after {@link Change#perform}, so that every version is the one the change
+     * left behind rather than the one the caller already holds. The kind is derived
+     * rather than guessed: a resource the refactoring named and that is no longer at
+     * its address was moved away or deleted, and either way re-reading that address
+     * now fails - which is the thing a caller most needs to be told.
+     *
+     * @param primary the resource the result is addressed to, listed first. Its kind
+     *            is the operation's own - a rename moved it, an extract created it -
+     *            because the tree alone cannot tell a move from a deletion
+     */
+    private static List<AffectedResource> affectedBy( PendingChanges pending, IResource primary, ChangeKind primaryKind )
+    {
+        LinkedHashMap<IPath, AffectedResource> byPath = new LinkedHashMap<>();
+        if ( primary != null )
+        {
+            byPath.put( primary.getFullPath(), AffectedResource.of( primary, primaryKind ) );
+        }
+        for ( IResource resource : pending.resources() )
+        {
+            IPath path = resource.getFullPath();
+            if ( byPath.containsKey( path ) )
+            {
+                continue;
+            }
+            ChangeKind kind = !resource.exists() ? ChangeKind.DELETED
+                    : pending.existedBefore().contains( path ) ? ChangeKind.MODIFIED : ChangeKind.CREATED;
+            byPath.put( path, AffectedResource.of( resource, kind ) );
+        }
+        return List.copyOf( byPath.values() );
+    }
+
+    /**
+     * Resolves a file that must exist and be writable, applying the same access rules
+     * as the other editing entry points.
+     */
+    private IFile resolveEditableFile( String projectName, String filePath )
+    {
+        IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+        IProject project = root.getProject( projectName );
+        if ( !project.exists() )
+        {
+            throw new RuntimeException( "Error: Project '" + projectName + "' does not exist." );
+        }
+        if ( !project.isOpen() )
+        {
+            throw new RuntimeException( "Error: Project '" + projectName + "' is closed." );
+        }
+        IFile file = project.getFile( IPath.fromPath( Path.of( filePath ) ) );
+        if ( !file.exists() )
+        {
+            throw new RuntimeException( "Error: File '" + filePath + "' does not exist in project '" + projectName + "'." );
+        }
+        aiIgnoreService.assertAccessAllowed( file );
+        return file;
+    }
+
+    /**
+     * The local-history state an edit just displaced.
+     * <p>
+     * Must be read <em>after</em> the write: every write carries
+     * {@link IResource#KEEP_HISTORY}, so the content it replaced becomes the newest
+     * stored state at that point. Read before the write this would return the
+     * <em>previous</em> edit's content, which is not what undoing this one restores.
+     * It is the same state {@link #undoEdit} restores from.
+     *
+     * @return the most recent stored state, or null when the file has no history yet
+     */
+    private IFileState currentHistoryState( IFile file )
+    {
+        try
+        {
+            IFileState[] history = file.getHistory( null );
+            return ( history != null && history.length > 0 ) ? history[0] : null;
+        }
+        catch ( CoreException e )
+        {
+            // History is a convenience, not a precondition: an edit must not fail
+            // because the history store could not be read.
+            logger.warn( "Could not read local history for " + file.getFullPath() );
+            return null;
+        }
+    }
 }

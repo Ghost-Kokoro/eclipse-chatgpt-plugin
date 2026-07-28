@@ -32,8 +32,16 @@ import org.osgi.util.tracker.ServiceTracker;
 
 import com.github.gradusnikov.eclipse.assistai.Activator;
 import com.github.gradusnikov.eclipse.assistai.chat.ChatMessage;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.EditorService;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ContentRange;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
+
+import java.util.List;
 
 public class ChatMessageFactoryPDETest {
 
@@ -115,19 +123,34 @@ public class ChatMessageFactoryPDETest {
             }
 
             @Override
-            public ResourceToolResult getCurrentlyOpenedFileContentWithResource()
+            public ResourceReadResult readCurrentlyOpenedFile()
             {
                 return Optional.ofNullable( activeFile )
-                        .map( file -> ResourceToolResult.transientResult(
-                                "# Currently Opened File:\n\n" + file.getProjectRelativePath() + "\n",
-                                "getCurrentlyOpenedFile" ) )
-                        .orElseGet( () -> ResourceToolResult.transientResult( "Error: No active file", "getCurrentlyOpenedFile" ) );
+                        .map( file -> new ResourceReadResult(
+                                ResourceReadResult.ReadStatus.OK,
+                                ResourceDescriptor.fromWorkspaceFile( file, "getCurrentlyOpenedFile" ).uri().toString(),
+                                file.getProject().getName(),
+                                file.getProjectRelativePath().toString(),
+                                "java",
+                                ResourceVersion.of( file ),
+                                new ContentRange( 1, 1, 1, 1 ),
+                                1,
+                                file.getProjectRelativePath() + "\n",
+                                SourceOrigin.WORKSPACE_SOURCE,
+                                false, false, List.of(), List.of() ) )
+                        .orElseGet( () -> ResourceReadResult.failed( null, null, Diagnostic.fatal(
+                                DiagnosticCode.RESOURCE_NOT_FOUND, "No active file" ) ) );
             }
 
             @Override
-            public String getEditorSelection()
+            public ResourceReadResult readEditorSelection()
             {
-                return "No text is currently selected in the editor.";
+                // Nothing selected is an ordinary answer, not a failure: an OK result
+                // with a zero-width range and no content.
+                return new ResourceReadResult(
+                        ResourceReadResult.ReadStatus.OK, null, null, null, null,
+                        ResourceVersion.UNKNOWN, new ContentRange( 1, 1, 1, 1 ), 0, "",
+                        SourceOrigin.WORKSPACE_SOURCE, false, false, List.of(), List.of() );
             }
         };
         context.set( EditorService.class, editorService );

@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenExecutionResult;
+import org.apache.maven.model.Dependency;
 import org.apache.maven.project.MavenProject;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -22,6 +23,8 @@ import org.eclipse.m2e.core.project.MavenUpdateRequest;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationContext;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenDependenciesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenProjectListResponse;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.e4.core.di.annotations.Creatable;
@@ -399,43 +402,34 @@ public class MavenService
     }
 
     /**
-     * Lists all available Maven projects in the workspace.
-     * 
-     * @return A list of Maven projects with their details
+     * The Maven projects m2e knows about in this workspace.
+     * <p>
+     * Both names are reported: the Eclipse {@code projectName} every other tool takes,
+     * and the Maven coordinates a build command takes. They are frequently different
+     * strings, and the coordinates used to arrive as {@code ": "}-separated text inside
+     * an indented bullet.
+     *
+     * @return the projects, or an empty list with a count of zero
      */
-    public String listMavenProjects()
+    public MavenProjectListResponse listMavenProjects()
     {
         try
         {
             IMavenProjectRegistry projectRegistry = MavenPlugin.getMavenProjectRegistry();
-            List<IMavenProjectFacade> facades = projectRegistry.getProjects();
+            List<MavenProjectListResponse.MavenProject> projects = new ArrayList<>();
 
-            if ( facades.isEmpty() )
-            {
-                return "No Maven projects found in the workspace.";
-            }
-
-            StringBuilder result = new StringBuilder();
-            result.append( "Maven projects in the workspace:\n\n" );
-
-            for ( IMavenProjectFacade facade : facades )
+            for ( IMavenProjectFacade facade : projectRegistry.getProjects() )
             {
                 IProject project = facade.getProject();
-                String groupId = facade.getArtifactKey().groupId();
-                String artifactId = facade.getArtifactKey().artifactId();
-                String version = facade.getArtifactKey().version();
-                String packaging = facade.getPackaging();
-
-                result.append( "- Project: " ).append( project.getName() ).append( "\n" );
-                result.append( "  GroupId: " ).append( groupId ).append( "\n" );
-                result.append( "  ArtifactId: " ).append( artifactId ).append( "\n" );
-                result.append( "  Version: " ).append( version ).append( "\n" );
-                result.append( "  Packaging: " ).append( packaging ).append( "\n" );
-                result.append( "\n" );
+                projects.add( new MavenProjectListResponse.MavenProject(
+                        project.getName(),
+                        facade.getArtifactKey().groupId(),
+                        facade.getArtifactKey().artifactId(),
+                        facade.getArtifactKey().version(),
+                        facade.getPackaging() ) );
             }
 
-            return result.toString();
-
+            return MavenProjectListResponse.of( projects );
         }
         catch ( Exception e )
         {
@@ -444,13 +438,22 @@ public class MavenService
     }
 
     /**
-     * Gets Maven project dependencies.
+     * The dependencies one project's pom declares.
+     * <p>
+     * These come from the Maven project model - what the pom declares after
+     * inheritance - not from the resolved transitive graph. That is a property of the
+     * tool and belongs in its description, which is why it is no longer a {@code Note:}
+     * line inside the answer.
+     * <p>
+     * A dependency whose version comes from a parent's {@code dependencyManagement}
+     * reports a null {@code version}, where it used to print the literal text
+     * {@code null}.
      * 
      * @param projectName
      *            The name of the Maven project
-     * @return A list of dependencies with their details
+     * @return the declared dependencies, or an empty list with a count of zero
      */
-    public String getProjectDependencies( String projectName )
+    public MavenDependenciesResponse getProjectDependencies( String projectName )
     {
         Objects.requireNonNull( projectName, "Project name cannot be null" );
 
@@ -489,9 +492,7 @@ public class MavenService
                 throw new RuntimeException( "Error: Could not find Maven configuration for project '" + projectName + "'." );
             }
 
-            // Get dependencies
-            final StringBuilder result = new StringBuilder();
-            result.append( "Dependencies for project '" ).append( projectName ).append( "':\n\n" );
+            final List<MavenDependenciesResponse.MavenDependency> dependencies = new ArrayList<>();
 
             final IMaven maven = MavenPlugin.getMaven();
             final IMavenExecutionContext context = maven.createExecutionContext();
@@ -509,26 +510,16 @@ public class MavenService
                             // Read the project using the available API
                             MavenProject mavenProject = maven.readProject( facade.getPomFile(), monitor );
 
-                            // Add note about dependency extraction method
-                            result.append( "Note: Showing dependencies from the Maven project model.\n\n" );
-
-                            // Get the dependencies from the model
-                            List<org.apache.maven.model.Dependency> dependencies = mavenProject.getModel().getDependencies();
-
-                            if ( dependencies.isEmpty() )
+                            for ( Dependency dependency : mavenProject.getModel().getDependencies() )
                             {
-                                result.append( "No dependencies found in this project.\n" );
-                            }
-                            else
-                            {
-                                for ( org.apache.maven.model.Dependency dependency : dependencies )
-                                {
-                                    result.append( "- GroupId: " ).append( dependency.getGroupId() ).append( "\n" );
-                                    result.append( "  ArtifactId: " ).append( dependency.getArtifactId() ).append( "\n" );
-                                    result.append( "  Version: " ).append( dependency.getVersion() ).append( "\n" );
-                                    result.append( "  Scope: " ).append( dependency.getScope() != null ? dependency.getScope() : "compile" ).append( "\n" );
-                                    result.append( "\n" );
-                                }
+                                dependencies.add( new MavenDependenciesResponse.MavenDependency(
+                                        dependency.getGroupId(),
+                                        dependency.getArtifactId(),
+                                        // Null, not "null": the version is managed elsewhere.
+                                        dependency.getVersion(),
+                                        // Maven's own default, applied here so a caller
+                                        // comparing scopes does not have to know the rule.
+                                        dependency.getScope() == null ? "compile" : dependency.getScope() ) );
                             }
 
                             return null;
@@ -540,7 +531,7 @@ public class MavenService
                     }
                 }, new NullProgressMonitor() );
 
-                return result.toString();
+                return MavenDependenciesResponse.of( projectName, dependencies );
 
             }
             catch ( CoreException e )

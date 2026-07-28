@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.List;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IProjectDescription;
@@ -35,6 +36,26 @@ import org.osgi.util.tracker.ServiceTracker;
 import org.eclipse.e4.ui.di.UISynchronize;
 
 import com.github.gradusnikov.eclipse.assistai.Activator;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitBranchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitCheckoutResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitCheckoutResponse.CheckoutStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitCommitResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDeleteBranchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDiffResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDiffResponse.FileChangeType;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitDiffResponse.GitFileDiff;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitLogResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStagePatchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStagePatchResponse.PatchStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStageResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStageResponse.StageOperation;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashPopResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashPopResponse.PopStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStashResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStatusResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.GitStatusResponse.ChangeType;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.EditorService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.GitService;
 import com.github.gradusnikov.eclipse.assistai.tools.UISynchronizeCallable;
@@ -160,8 +181,9 @@ public class GitServicePDETest
             + " \n"
             + "     public void farewell() {\n";
 
-        String result = service.stagePatch(TEST_PROJECT_NAME, patch);
-        assertTrue(result.contains("staged successfully"), "Expected success message, got: " + result);
+        GitStagePatchResponse result = service.stagePatch(TEST_PROJECT_NAME, patch);
+        assertEquals(GitStagePatchResponse.PatchStatus.STAGED, result.status(), result.summaryText());
+        assertTrue(result.workingTreePreserved(), "the caller's uncommitted work must survive");
 
         Repository repository = git.getRepository();
         DirCache dirCache = repository.readDirCache();
@@ -200,8 +222,9 @@ public class GitServicePDETest
             + "+\n"
             + "+Updated readme.\n";
 
-        String result = service.stagePatch(TEST_PROJECT_NAME, patch);
-        assertTrue(result.contains("staged successfully"), "Expected success message, got: " + result);
+        GitStagePatchResponse result = service.stagePatch(TEST_PROJECT_NAME, patch);
+        assertEquals(GitStagePatchResponse.PatchStatus.STAGED, result.status(), result.summaryText());
+        assertTrue(result.workingTreePreserved(), "the caller's uncommitted work must survive");
 
         Repository repository = git.getRepository();
         DirCache dirCache = repository.readDirCache();
@@ -226,8 +249,13 @@ public class GitServicePDETest
     @Test
     public void testStagePatch_invalidPatch_returnsNoFiles()
     {
-        String result = service.stagePatch(TEST_PROJECT_NAME, "this is not a valid patch");
-        assertTrue(result.contains("No files"), "Expected no files message, got: " + result);
+        GitStagePatchResponse result = service.stagePatch(TEST_PROJECT_NAME, "this is not a valid patch");
+        // A patch that parses to no file headers staged nothing, so it is a failure -
+        // reporting it as success meant the next commit was empty or wrong.
+        assertEquals(GitStagePatchResponse.PatchStatus.FAILED, result.status());
+        assertEquals(0, result.totalFiles());
+        assertTrue(result.workingTreePreserved(), "nothing was touched, so nothing was lost");
+        assertFalse(result.diagnostics().isEmpty());
     }
 
     @Test
@@ -240,22 +268,29 @@ public class GitServicePDETest
 
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
-        String status = service.getStatus(TEST_PROJECT_NAME);
-        assertTrue(status.contains("Hello.java"), "Status should show modified file");
+        GitStatusResponse status = service.getStatus(TEST_PROJECT_NAME);
+        assertFalse(status.clean());
+        assertTrue(status.unstaged().stream().anyMatch(change -> "src/Hello.java".equals(change.filePath())),
+                "Status should show the modified file: " + status.unstaged());
     }
 
     @Test
     public void testGetLog_showsCommitHistory() throws Exception
     {
-        String log = service.getLog(TEST_PROJECT_NAME, 10);
-        assertTrue(log.contains("Initial commit"), "Log should contain initial commit message");
+        GitLogResponse log = service.getLog(TEST_PROJECT_NAME, 10);
+        assertTrue(log.commits().stream().anyMatch(commit -> "Initial commit".equals(commit.shortMessage())),
+                "Log should contain the initial commit");
     }
 
     @Test
     public void testGetDiff_noChanges() throws Exception
     {
-        String diff = service.getDiff(TEST_PROJECT_NAME, false);
-        assertTrue(diff.isEmpty() || !diff.contains("Error"), "Clean repo should have empty or no-error diff");
+        // A clean tree and a diff that could not be produced both rendered as no hunks,
+        // which is why this used to assert "empty OR not an error" and prove nothing.
+        GitDiffResponse diff = service.getDiff(TEST_PROJECT_NAME, false, null, false);
+        assertTrue(diff.identical(), diff.unifiedDiff());
+        assertEquals(0, diff.addedLines());
+        assertEquals(0, diff.removedLines());
     }
 
     @Test
@@ -269,8 +304,10 @@ public class GitServicePDETest
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
         service.addFiles(TEST_PROJECT_NAME, ".");
 
-        String diff = service.getDiff(TEST_PROJECT_NAME, true);
-        assertTrue(diff.contains("Staged change"), "Staged diff should show the staged change");
+        GitDiffResponse diff = service.getDiff(TEST_PROJECT_NAME, true, null, false);
+        assertFalse(diff.identical());
+        assertTrue(diff.unifiedDiff().contains("Staged change"), "Staged diff should show the staged change");
+        assertTrue(diff.addedLines() > 0, "the counts come from the EditList, not from the rendering");
     }
 
     @Test
@@ -281,11 +318,11 @@ public class GitServicePDETest
                 "package src;\npublic class Hello { String value = \"changed source\"; }\n", StandardCharsets.UTF_8);
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
-        String diff = service.getDiff(TEST_PROJECT_NAME, false, "README.md", false);
+        GitDiffResponse diff = service.getDiff(TEST_PROJECT_NAME, false, "README.md", false);
 
-        assertTrue(diff.contains("Changed readme"));
-        assertFalse(diff.contains("changed source"));
-        assertFalse(diff.contains("src/Hello.java"));
+        assertTrue(diff.unifiedDiff().contains("Changed readme"));
+        assertFalse(diff.unifiedDiff().contains("changed source"));
+        assertFalse(diff.unifiedDiff().contains("src/Hello.java"));
     }
 
     @Test
@@ -301,24 +338,26 @@ public class GitServicePDETest
         Files.writeString(new File(repoDir, "README.md").toPath(), "#   Test   Project\n", StandardCharsets.UTF_8);
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
-        String diff = service.getDiff(TEST_PROJECT_NAME, false, "README.md", true);
+        GitDiffResponse diff = service.getDiff(TEST_PROJECT_NAME, false, "README.md", true);
 
-        assertFalse(diff.contains("-# Test Project"));
-        assertFalse(diff.contains("+#   Test   Project"));
+        assertFalse(diff.unifiedDiff().contains("-# Test Project"));
+        assertFalse(diff.unifiedDiff().contains("+#   Test   Project"));
     }
 
     @Test
     public void testListBranches() throws Exception
     {
-        String branches = service.listBranches(TEST_PROJECT_NAME, false);
-        assertTrue(branches.contains("master") || branches.contains("main"), "Should list the default branch");
+        GitBranchResponse branches = service.listBranches(TEST_PROJECT_NAME, false);
+        assertTrue(branches.branches().stream().anyMatch(branch -> branch.current()), "Should flag the checked-out branch");
+        assertEquals("master", branches.currentBranch());
     }
 
     @Test
     public void testListBranches_includeRemote() throws Exception
     {
-        String branches = service.listBranches(TEST_PROJECT_NAME, true);
+        GitBranchResponse branches = service.listBranches(TEST_PROJECT_NAME, true);
         assertNotNull(branches);
+        assertTrue(branches.remoteBranches().isEmpty(), "The test repository has no remotes");
     }
 
     @Test
@@ -327,11 +366,14 @@ public class GitServicePDETest
         String createResult = service.createBranch(TEST_PROJECT_NAME, "feature-test", null);
         assertTrue(createResult.contains("feature-test"), "Should confirm branch creation");
 
-        String branches = service.listBranches(TEST_PROJECT_NAME, false);
-        assertTrue(branches.contains("feature-test"), "New branch should appear in list");
+        GitBranchResponse branches = service.listBranches(TEST_PROJECT_NAME, false);
+        assertTrue(branches.branches().stream().anyMatch(branch -> "feature-test".equals(branch.name())),
+                "New branch should appear in list");
 
-        String deleteResult = service.deleteBranch(TEST_PROJECT_NAME, "feature-test", false);
-        assertTrue(deleteResult.contains("feature-test"), "Should confirm branch deletion");
+        GitDeleteBranchResponse deleteResult = service.deleteBranch(TEST_PROJECT_NAME, "feature-test", false);
+        // Fully qualified, as JGit returns it: "refs/heads/x" and "refs/remotes/origin/x"
+        // are different refs and a bare name cannot tell them apart.
+        assertEquals(List.of("refs/heads/feature-test"), deleteResult.deletedRefs());
     }
 
     @Test
@@ -346,11 +388,13 @@ public class GitServicePDETest
     public void testCheckoutBranch() throws Exception
     {
         service.createBranch(TEST_PROJECT_NAME, "checkout-test", null);
-        String result = service.checkoutBranch(TEST_PROJECT_NAME, "checkout-test");
-        assertTrue(result.contains("checkout-test"), "Should confirm checkout");
+        GitCheckoutResponse result = service.checkoutBranch(TEST_PROJECT_NAME, "checkout-test");
+        assertEquals(GitCheckoutResponse.CheckoutStatus.SWITCHED, result.status(), result.summaryText());
+        assertEquals("checkout-test", result.currentBranch());
+        assertTrue(result.blockingFiles().isEmpty(), "a clean checkout is blocked by nothing");
 
-        String status = service.getStatus(TEST_PROJECT_NAME);
-        assertTrue(status.contains("checkout-test"), "Status should show new branch");
+        GitStatusResponse status = service.getStatus(TEST_PROJECT_NAME);
+        assertEquals("checkout-test", status.branch(), "Status should report the new branch");
 
         service.checkoutBranch(TEST_PROJECT_NAME, "master");
         service.deleteBranch(TEST_PROJECT_NAME, "checkout-test", false);
@@ -365,14 +409,15 @@ public class GitServicePDETest
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
         service.addFiles(TEST_PROJECT_NAME, "resettest.txt");
 
-        String stagedDiff = service.getDiff(TEST_PROJECT_NAME, true);
-        assertTrue(stagedDiff.contains("reset test content"), "File should be staged");
+        GitDiffResponse stagedDiff = service.getDiff(TEST_PROJECT_NAME, true, null, false);
+        assertTrue(stagedDiff.unifiedDiff().contains("reset test content"), "File should be staged");
 
-        String resetResult = service.resetFiles(TEST_PROJECT_NAME, "resettest.txt");
-        assertTrue(resetResult.contains("Unstaged"), "Should confirm reset, got: " + resetResult);
+        GitStageResponse resetResult = service.resetFiles(TEST_PROJECT_NAME, "resettest.txt");
+        assertEquals(GitStageResponse.StageOperation.UNSTAGE, resetResult.operation());
+        assertEquals(1, resetResult.totalFiles(), resetResult.summaryText());
 
-        String afterReset = service.getDiff(TEST_PROJECT_NAME, true);
-        assertFalse(afterReset.contains("reset test content"), "Staged changes should be gone after reset");
+        GitDiffResponse afterReset = service.getDiff(TEST_PROJECT_NAME, true, null, false);
+        assertFalse(afterReset.unifiedDiff().contains("reset test content"), "Staged changes should be gone after reset");
     }
 
     @Test
@@ -385,14 +430,19 @@ public class GitServicePDETest
 
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
-        String stashResult = service.stash(TEST_PROJECT_NAME, "test stash");
-        assertTrue(stashResult.contains("Stash") || stashResult.contains("stash"), "Should confirm stash: " + stashResult);
+        GitStashResponse stashResult = service.stash(TEST_PROJECT_NAME, "test stash");
+        assertTrue(stashResult.stashed(), stashResult.summaryText());
+        assertNotNull(stashResult.stash().sha(),
+                "the stash commit SHA is data, as gitStashList already reports it");
 
-        String stashListResult = service.stashList(TEST_PROJECT_NAME);
-        assertTrue(stashListResult.contains("test stash"), "Stash list should contain our stash message");
+        GitStashListResponse stashListResult = service.stashList(TEST_PROJECT_NAME);
+        assertEquals(1, stashListResult.totalStashes());
+        assertTrue(stashListResult.stashes().get(0).message().contains("test stash"),
+                "Stash list should contain our stash message");
 
-        String popResult = service.stashPop(TEST_PROJECT_NAME);
-        assertTrue(popResult.contains("Stash") || popResult.contains("stash") || popResult.contains("applied"), "Should confirm pop: " + popResult);
+        GitStashPopResponse popResult = service.stashPop(TEST_PROJECT_NAME);
+        assertEquals(GitStashPopResponse.PopStatus.APPLIED, popResult.status(), popResult.summaryText());
+        assertTrue(popResult.dropped(), "a clean pop drops the stash; a conflicted one retains it");
 
         String content = Files.readString(srcFile.toPath(), StandardCharsets.UTF_8);
         assertTrue(content.contains("stash test"), "Working tree should have stashed changes back");
@@ -401,8 +451,9 @@ public class GitServicePDETest
     @Test
     public void testStashList_empty() throws Exception
     {
-        String result = service.stashList(TEST_PROJECT_NAME);
-        assertTrue(result.contains("No stash") || result.isEmpty() || result.contains("stash"), "Should handle empty stash list");
+        GitStashListResponse result = service.stashList(TEST_PROJECT_NAME);
+        assertEquals(0, result.totalStashes(), "An empty stash is a count, not a sentence");
+        assertTrue(result.stashes().isEmpty());
     }
 
     @Test
@@ -446,11 +497,14 @@ public class GitServicePDETest
 
         project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
-        String addResult = service.addFiles(TEST_PROJECT_NAME, "newfile.txt");
-        assertTrue(addResult.contains("Added"), "Should confirm file was added");
+        GitStageResponse addResult = service.addFiles(TEST_PROJECT_NAME, "newfile.txt");
+        // JGit's add succeeds against a pathspec matching nothing, so the count is the
+        // only thing that distinguishes a real stage from a typo in the path.
+        assertEquals(1, addResult.totalFiles(), addResult.summaryText());
 
-        String commitResult = service.commit(TEST_PROJECT_NAME, "Add new file");
-        assertTrue(commitResult.contains("Committed"), "Should confirm commit");
-        assertTrue(commitResult.contains("Add new file"), "Should contain commit message");
+        GitCommitResponse commitResult = service.commit(TEST_PROJECT_NAME, "Add new file");
+        assertNotNull(commitResult.commit().sha(), "the SHA is the handle for every next action");
+        assertEquals("Add new file", commitResult.commit().shortMessage());
+
     }
 }

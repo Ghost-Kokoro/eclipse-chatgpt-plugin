@@ -35,6 +35,9 @@ import org.osgi.util.tracker.ServiceTracker;
 
 import com.github.gradusnikov.eclipse.assistai.Activator;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeEditingService;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.resources.EditResult;
+import com.github.gradusnikov.eclipse.assistai.resources.Occurrence;
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceCache;
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
 import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
@@ -132,6 +135,90 @@ public class CodeEditingServicePDETest {
         }
     }
     
+    /** replaceLines with no staleness check and no preview, which is what these tests mean. */
+    private EditResult replaceLines(String filePath, String replacement, int startLine, int endLine) {
+        return service.replaceLines(TEST_PROJECT_NAME, filePath, replacement, startLine, endLine,
+                IResource.NULL_STAMP, false);
+    }
+
+    /** insertIntoFile with no staleness check and no preview. */
+    private EditResult insertIntoFile(String filePath, String content, int atLine) {
+        return service.insertIntoFile(TEST_PROJECT_NAME, filePath, content, atLine,
+                IResource.NULL_STAMP, false);
+    }
+
+    /** deleteLinesInFile with no staleness check and no preview. */
+    private EditResult deleteLines(String filePath, int startLine, int endLine) {
+        return service.deleteLinesInFile(TEST_PROJECT_NAME, filePath, startLine, endLine,
+                IResource.NULL_STAMP, false);
+    }
+
+    @Test
+    public void testInsertIntoFile_beforeLineAndAppend() throws CoreException, IOException {
+        IFile testFile = createFile("src/testFile.txt", "Line 1\nLine 2\n");
+
+        EditResult inserted = insertIntoFile("src/testFile.txt", "Inserted", 2);
+        assertEquals(EditResult.EditStatus.APPLIED, inserted.status());
+        assertEquals("Line 1\nInserted\nLine 2\n", ResourceUtilities.readFileContent(testFile));
+
+        // One past the last line appends rather than failing.
+        EditResult appended = insertIntoFile("src/testFile.txt", "Appended", 4);
+        assertEquals(EditResult.EditStatus.APPLIED, appended.status());
+        assertEquals("Line 1\nInserted\nLine 2\nAppended\n", ResourceUtilities.readFileContent(testFile));
+    }
+
+    @Test
+    public void testInsertIntoFile_lineBeyondEndIsRejected() throws CoreException, IOException {
+        IFile testFile = createFile("src/testFile.txt", "Line 1\nLine 2\n");
+
+        EditResult result = insertIntoFile("src/testFile.txt", "Inserted", 9);
+
+        assertEquals(EditResult.EditStatus.REJECTED, result.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, result.diagnostics().get(0).code());
+        assertEquals("Line 1\nLine 2\n", ResourceUtilities.readFileContent(testFile));
+    }
+
+    @Test
+    public void testDeleteLinesInFile_removesRangeAndRefusesRangesBeyondTheFile()
+            throws CoreException, IOException {
+        IFile testFile = createFile("src/testFile.txt", "Line 1\nLine 2\nLine 3\nLine 4\n");
+
+        EditResult deleted = deleteLines("src/testFile.txt", 2, 3);
+        assertEquals(EditResult.EditStatus.APPLIED, deleted.status());
+        assertEquals("Line 1\nLine 4\n", ResourceUtilities.readFileContent(testFile));
+
+        EditResult rejected = deleteLines("src/testFile.txt", 1, 7);
+        assertEquals(EditResult.EditStatus.REJECTED, rejected.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, rejected.diagnostics().get(0).code());
+        assertEquals("Line 1\nLine 4\n", ResourceUtilities.readFileContent(testFile));
+    }
+
+    @Test
+    public void testReplaceLines_previewDoesNotWrite() throws CoreException, IOException {
+        String initialContent = "Line 1\nLine 2\nLine 3\n";
+        IFile testFile = createFile("src/testFile.txt", initialContent);
+
+        EditResult result = service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "Changed", 2, 2,
+                IResource.NULL_STAMP, true);
+
+        assertEquals(EditResult.EditStatus.PREVIEW, result.status());
+        assertTrue(result.unifiedDiff().contains("Changed"));
+        assertEquals(initialContent, ResourceUtilities.readFileContent(testFile));
+    }
+
+    @Test
+    public void testReplaceLines_staleModificationStampIsRejected() throws CoreException, IOException {
+        String initialContent = "Line 1\nLine 2\nLine 3\n";
+        IFile testFile = createFile("src/testFile.txt", initialContent);
+
+        EditResult result = service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "Changed", 2, 2,
+                testFile.getModificationStamp() + 1, false);
+
+        assertEquals(EditResult.EditStatus.REJECTED, result.status());
+        assertEquals(DiagnosticCode.VERSION_CONFLICT, result.diagnostics().get(0).code());
+        assertEquals(initialContent, ResourceUtilities.readFileContent(testFile));
+    }
+
     @Test
     public void testReplaceLines() throws CoreException, IOException {
         // Create a test file with multiple lines
@@ -146,7 +233,7 @@ public class CodeEditingServicePDETest {
         
         // Replace lines 2-4 (1-based index) with new content
         String replacementContent = "New Line A\nNew Line B";
-        String result = service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", replacementContent, 2, 4);
+        EditResult result = replaceLines("src/testFile.txt", replacementContent, 2, 4);
         
         System.out.println( result );
         
@@ -176,7 +263,7 @@ public class CodeEditingServicePDETest {
         
         // Replace the first line
         String replacementContent = "New First Line";
-        service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", replacementContent, 1, 1);
+        replaceLines("src/testFile.txt", replacementContent, 1, 1);
         
         // Read the updated file content
         String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -203,7 +290,7 @@ public class CodeEditingServicePDETest {
         
         // Replace the last line
         String replacementContent = "New Last Line";
-        service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", replacementContent, 3, 3);
+        replaceLines("src/testFile.txt", replacementContent, 3, 3);
         
         // Read the updated file content
         String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -230,7 +317,7 @@ public class CodeEditingServicePDETest {
         
         // Replace all lines
         String replacementContent = "Completely New Content";
-        service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", replacementContent, 1, 3);
+        replaceLines("src/testFile.txt", replacementContent, 1, 3);
         
         // Read the updated file content
         String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -254,7 +341,7 @@ public class CodeEditingServicePDETest {
         IFile testFile = createFile("src/testFile.txt", initialContent);
         
         // Replace lines with empty content (effectively deleting lines 2-3)
-        service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "", 2, 3);
+        replaceLines("src/testFile.txt", "", 2, 3);
         
         // Read the updated file content
         String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -276,28 +363,29 @@ public class CodeEditingServicePDETest {
                 "Line 2\n" +
                 "Line 3\n";
         
-        createFile("src/testFile.txt", initialContent);
+        IFile testFile = createFile("src/testFile.txt", initialContent);
         
-        // Test with start line beyond file length
-        Exception exception = assertThrows(RuntimeException.class, () -> {
-            service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "New Content", 11, 13);
-        });
+        // A range the file cannot satisfy is a rejection the caller branches on, not
+        // an exception, and nothing is written.
+        EditResult beyondEnd = replaceLines("src/testFile.txt", "New Content", 11, 13);
+        assertEquals(EditResult.EditStatus.REJECTED, beyondEnd.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, beyondEnd.diagnostics().get(0).code());
         
-        assertTrue(exception.getMessage().contains("range"));
+        EditResult zeroStart = replaceLines("src/testFile.txt", "New Content", 0, 2);
+        assertEquals(EditResult.EditStatus.REJECTED, zeroStart.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, zeroStart.diagnostics().get(0).code());
         
-        // Test with negative start line
-        exception = assertThrows(IllegalArgumentException.class, () -> {
-            service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "New Content", 0, 2);
-        });
+        EditResult inverted = replaceLines("src/testFile.txt", "New Content", 3, 2);
+        assertEquals(EditResult.EditStatus.REJECTED, inverted.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, inverted.diagnostics().get(0).code());
         
-        assertTrue(exception.getMessage().contains("range"));
+        // An end line past the end of the file used to be clamped to the last line,
+        // which rewrote lines the caller had excluded without saying so.
+        EditResult endBeyondEnd = replaceLines("src/testFile.txt", "New Content", 2, 9);
+        assertEquals(EditResult.EditStatus.REJECTED, endBeyondEnd.status());
+        assertEquals(DiagnosticCode.INVALID_RANGE, endBeyondEnd.diagnostics().get(0).code());
         
-        // Test with end line less than start line
-        exception = assertThrows(IllegalArgumentException.class, () -> {
-            service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", "New Content", 3, 2);
-        });
-        
-        assertTrue(exception.getMessage().contains("range"));
+        assertEquals(initialContent, ResourceUtilities.readFileContent(testFile));
     }
     
     
@@ -315,12 +403,13 @@ public class CodeEditingServicePDETest {
 	    // Replace a specific string
 	    String oldString = "some text to be replaced";
 	    String newString = "new replacement text";
-	    String result = service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, null, null);
+	    EditResult result = replaceAll("src/testFile.txt", oldString, newString, null, null);
 	    
-	    // Verify the operation was successful
-	    assertTrue(result.contains("Success: String replaced in file"));
-	    assertTrue(result.contains("Workspace state: saved=true"));
-	    assertTrue(result.contains("cache=updated"));
+	    // Verify the operation was successful, from the reported state rather than
+	    // from how it happens to be worded.
+	    assertEquals(EditResult.EditStatus.APPLIED, result.status());
+	    assertTrue(result.workspaceState().savedToDisk());
+	    assertTrue(result.workspaceState().cacheUpdated());
 	    
 	    // Read the updated file content
 	    String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -350,10 +439,11 @@ public class CodeEditingServicePDETest {
 	    // Replace the string only within a specific line range (lines 2-3)
 	    String oldString = "Replace this text";
 	    String newString = "Text was replaced";
-	    String result = service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, 2, 3);
+	    EditResult result = replaceAll("src/testFile.txt", oldString, newString, 2, 3);
 	    
 	    // Verify the operation was successful
-	    assertTrue(result.contains("Success: String replaced in file"));
+	    assertEquals(EditResult.EditStatus.APPLIED, result.status());
+	    assertEquals(2, result.edits().size(), "only the two occurrences in range should change");
 	    
 	    // Read the updated file content
 	    String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -381,7 +471,7 @@ public class CodeEditingServicePDETest {
 	    // Replace a string with empty content (effectively removing it)
 	    String oldString = "some text that will be removed";
 	    String newString = "";
-	    service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, null, null);
+	    replaceAll("src/testFile.txt", oldString, newString, null, null);
 	    
 	    // Read the updated file content
 	    String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -395,6 +485,17 @@ public class CodeEditingServicePDETest {
 	    assertEquals(expectedContent, updatedContent);
 	}
 	
+	/**
+	 * Replaces every occurrence, which is what these tests were written against.
+	 * The tool's own default is UNIQUE - it refuses to guess between matches - so
+	 * replace-all has to be asked for explicitly.
+	 */
+	private EditResult replaceAll(String filePath, String oldString, String newString,
+			Integer startLine, Integer endLine) {
+		return service.replaceString(TEST_PROJECT_NAME, filePath, oldString, newString,
+				startLine, endLine, IResource.NULL_STAMP, Occurrence.ALL, null, false);
+	}
+
 	@Test
 	public void testReplaceStringInFile_StringNotFound() throws CoreException, IOException {
 	    // Create a test file
@@ -406,13 +507,13 @@ public class CodeEditingServicePDETest {
 	    String oldString = "non-existent string";
 	    String newString = "replacement";
 	    
-	    // This should throw a RuntimeException
-	    Exception exception = assertThrows(RuntimeException.class, () -> {
-	        service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, null, null);
-	    });
-	    
-	    // Verify the exception message
-	    assertTrue(exception.getMessage().contains("The specified string was not found in the file"));
+	    // Text that is not there is a rejection the caller acts on, not an exception:
+	    // the edit simply did not apply, and the reason is a code rather than prose.
+	    EditResult result = replaceAll("src/testFile.txt", oldString, newString, null, null);
+
+	    assertEquals(EditResult.EditStatus.REJECTED, result.status());
+	    assertEquals(DiagnosticCode.TEXT_NOT_FOUND, result.diagnostics().get(0).code());
+	    assertTrue(result.edits().isEmpty());
 	}
 	
 	@Test
@@ -430,7 +531,7 @@ public class CodeEditingServicePDETest {
 	    String newString = "NewLine";
 	    
 	    Exception exception = assertThrows(RuntimeException.class, () -> {
-	        service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, 11, 13);
+	        replaceAll("src/testFile.txt", oldString, newString, 11, 13);
 	    });
 	    
 	    assertTrue(exception.getMessage().contains("Start line"));
@@ -449,7 +550,7 @@ public class CodeEditingServicePDETest {
 	    // Replace all occurrences of a string
 	    String oldString = "This text will be replaced";
 	    String newString = "Replacement successful";
-	    service.replaceStringInFile(TEST_PROJECT_NAME, "src/testFile.txt", oldString, newString, null, null);
+	    replaceAll("src/testFile.txt", oldString, newString, null, null);
 	    
 	    // Read the updated file content
 	    String updatedContent = ResourceUtilities.readFileContent(testFile);
@@ -488,7 +589,7 @@ public class ApplicationNew {
 		 
 		 IFile testFile = createFile("src/testFile.txt", initialContent);
 
-		 service.replaceLines(TEST_PROJECT_NAME, "src/testFile.txt", replacement, startLine, endLine);
+		 replaceLines("src/testFile.txt", replacement, startLine, endLine);
 		 
 		 String updatedContent = ResourceUtilities.readFileContent(testFile);
 		 System.out.println("------------");
@@ -509,9 +610,20 @@ public class ApplicationNew {
                 }
                 """);
 
-        String result = service.refactorExtractTypeToNewFile(TEST_PROJECT_NAME, "src/Outer.java", "Outer.Inner");
+        EditResult result = service.refactorExtractTypeToNewFile(TEST_PROJECT_NAME, "src/Outer.java", "Outer.Inner");
 
-        assertTrue(result.contains("Success: Nested Java type 'Outer.Inner' was extracted"));
+        assertEquals(EditResult.EditStatus.APPLIED, result.status());
+        // The result names the extracted file - what a caller reads or edits next.
+        assertEquals(TEST_PROJECT_NAME, result.projectName());
+        assertEquals("src/Inner.java", result.filePath());
+        // ...and lists everything the refactoring touched, so the source file no longer
+        // has to be guessed at from the tool's description.
+        assertTrue(result.affectedResources().stream().anyMatch(
+                        a -> "src/Inner.java".equals(a.filePath()) && a.kind() == EditResult.ChangeKind.CREATED),
+                () -> result.affectedResources().toString());
+        assertTrue(result.affectedResources().stream().anyMatch(
+                        a -> "src/Outer.java".equals(a.filePath()) && a.kind() == EditResult.ChangeKind.MODIFIED),
+                () -> result.affectedResources().toString());
         assertTrue(project.getFile("src/Inner.java").exists());
         assertTrue(ResourceUtilities.readFileContent(outerFile).contains("Inner inner = new Inner();"));
         assertTrue(ResourceUtilities.readFileContent(project.getFile("src/Inner.java")).contains("class Inner"));
@@ -536,11 +648,12 @@ public class ApplicationNew {
                 +ZETA
                 """;
 
-        String result = service.applyPatch( TEST_PROJECT_NAME, "src/patch.txt", patch, false );
+        EditResult result = applyPatch( "src/patch.txt", patch );
 
-        assertTrue( result.contains( "Success: Patch applied" ) );
+        assertEquals( EditResult.EditStatus.APPLIED, result.status() );
         assertEquals( "alpha\nBETA\ngamma\ndelta\nepsilon\nZETA\n", ResourceUtilities.readFileContent( file ) );
 
+        // The whole patch is one write, so one undo puts the file back as it was.
         service.undoEdit( TEST_PROJECT_NAME, "src/patch.txt" );
         assertEquals( original, ResourceUtilities.readFileContent( file ) );
     }
@@ -557,7 +670,7 @@ public class ApplicationNew {
                  three
                 """;
 
-        service.applyPatch( TEST_PROJECT_NAME, "src/crlf.txt", patch, false );
+        applyPatch( "src/crlf.txt", patch );
 
         assertEquals( "one\r\nTWO\r\nthree\r\n", ResourceUtilities.readFileContent( file ) );
     }
@@ -576,10 +689,33 @@ public class ApplicationNew {
                 +THREE
                 """;
 
-        assertThrows( RuntimeException.class,
-                () -> service.applyPatch( TEST_PROJECT_NAME, "src/atomic.txt", patch, false ) );
+        // A hunk whose context is not in the file rejects the whole patch. It is
+        // retryable: re-reading the file and recomputing the patch is what fixes it.
+        EditResult result = applyPatch( "src/atomic.txt", patch );
 
+        assertEquals( EditResult.EditStatus.REJECTED, result.status() );
+        assertEquals( DiagnosticCode.TEXT_NOT_FOUND, result.diagnostics().get( 0 ).code() );
+        assertTrue( result.diagnostics().get( 0 ).retryable() );
         assertEquals( original, ResourceUtilities.readFileContent( file ) );
+    }
+
+    @Test
+    public void testApplyPatchRejectsAMalformedPatch() throws Exception
+    {
+        String original = "one\ntwo\n";
+        IFile file = createFile( "src/malformed.txt", original );
+
+        EditResult result = applyPatch( "src/malformed.txt", "this is not a unified diff\n" );
+
+        assertEquals( EditResult.EditStatus.REJECTED, result.status() );
+        assertEquals( DiagnosticCode.INVALID_RANGE, result.diagnostics().get( 0 ).code() );
+        assertEquals( original, ResourceUtilities.readFileContent( file ) );
+    }
+
+    /** applyPatch with no wizard, no staleness check and no preview. */
+    private EditResult applyPatch( String filePath, String patch )
+    {
+        return service.applyPatch( TEST_PROJECT_NAME, filePath, patch, false, IResource.NULL_STAMP, false );
     }
 
     @Test
@@ -588,11 +724,12 @@ public class ApplicationNew {
         IFile file = createFile( "src/SynchronizedType.java",
                 "public class SynchronizedType { int value = 1; }\n" );
 
-        String result = service.replaceFileContent( TEST_PROJECT_NAME, "src/SynchronizedType.java",
-                "public class SynchronizedType { int value = 2; }\n" );
+        EditResult result = service.replaceFileContent( TEST_PROJECT_NAME, "src/SynchronizedType.java",
+                "public class SynchronizedType { int value = 2; }\n", IResource.NULL_STAMP, false );
 
-        assertTrue( result.contains( "Workspace state: saved=true" ) );
-        assertTrue( result.contains( "jdtConsistent=true" ) );
+        assertEquals( EditResult.EditStatus.APPLIED, result.status() );
+        assertTrue( result.workspaceState().savedToDisk() );
+        assertEquals( "true", result.workspaceState().jdtConsistent() );
 
         var compilationUnit = JavaCore.createCompilationUnitFrom( file );
         assertTrue( compilationUnit.isConsistent() );
@@ -620,12 +757,50 @@ public class ApplicationNew {
         editorBackedService.logger = service.logger;
         editorBackedService.sync = service.sync;
         editorBackedService.resourceCache = resourceCache;
+        // formatFile resolves the file through the same access rules as every other
+        // editing entry point, so this hand-built instance needs the service too.
+        editorBackedService.aiIgnoreService = service.aiIgnoreService;
 
-        String result = editorBackedService.formatFile( TEST_PROJECT_NAME, "src/settings.json" );
+        EditResult result = editorBackedService.formatFile( TEST_PROJECT_NAME, "src/settings.json" );
 
         assertEquals( "{\n  \"enabled\": true\n}\n", ResourceUtilities.readFileContent( file ) );
-        assertTrue( result.contains( "formatted using test.json.format" ) );
-        assertTrue( result.contains( "Workspace state: saved=true" ) );
+        assertEquals( EditResult.EditStatus.APPLIED, result.status() );
+        assertTrue( result.workspaceState().savedToDisk() );
+        // The editor's formatter wrote the file itself, so the edit is only described
+        // afterwards - but it is described in the same fields a JDT format would use.
+        assertEquals( 1, result.edits().size() );
+        assertTrue( result.unifiedDiff().contains( "\"enabled\"" ) );
+    }
+
+    @Test
+    public void testOrganizeImportsInPackageNamesThePackageAndTheFilesItChanged() throws Exception
+    {
+        project.getFolder( "src/pkg" ).create( IResource.NONE, true, monitor );
+        createFile( "src/pkg/Clean.java", "package pkg;\n\npublic class Clean {}\n" );
+        createFile( "src/pkg/Unused.java", """
+                package pkg;
+
+                import java.util.List;
+
+                public class Unused {}
+                """ );
+
+        EditResult result = service.organizeImportsInPackage( TEST_PROJECT_NAME, "pkg" );
+
+        assertEquals( EditResult.EditStatus.APPLIED, result.status() );
+        // The package folder is what the result is addressed to - the same thing
+        // refactorRenamePackage reports - and the files it actually changed are the
+        // list. A file it left alone is not in it.
+        assertEquals( TEST_PROJECT_NAME, result.projectName() );
+        assertEquals( "src/pkg", result.filePath() );
+        assertEquals( 1, result.affectedResources().size(), () -> result.affectedResources().toString() );
+        assertEquals( "src/pkg/Unused.java", result.affectedResources().get( 0 ).filePath() );
+        assertEquals( EditResult.ChangeKind.MODIFIED, result.affectedResources().get( 0 ).kind() );
+        assertTrue( result.affectedResources().get( 0 ).version().isKnown(),
+                "the caller needs the new stamp to edit that file next" );
+        assertTrue( result.diagnostics().isEmpty(), () -> result.diagnostics().toString() );
+        assertTrue( !ResourceUtilities.readFileContent( project.getFile( "src/pkg/Unused.java" ) )
+                .contains( "import java.util.List" ) );
     }
 
     private IFile createFile(String path, String content) throws CoreException {

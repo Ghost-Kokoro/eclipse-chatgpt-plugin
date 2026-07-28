@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.NullProgressMonitor;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
+import com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult;
+
 /**
  * A single execution of a tool declared with
  * {@code @Tool( longExecution = true )}.
@@ -252,9 +255,44 @@ public class Operation
         return startedWallMillis;
     }
 
+    /**
+     * The result as a person should read it.
+     * <p>
+     * A structured result carries its own rendering, so it is unwrapped rather than
+     * passed to {@code toString()} - which for a record would yield
+     * {@code TestRunResponse[status=..., ...]} instead of the JSON.
+     */
     public String getResultText()
     {
+        if ( result instanceof StructuredToolResult structured )
+        {
+            return structured.text();
+        }
+        if ( result instanceof Record payload )
+        {
+            return McpJson.toJson( payload );
+        }
         return Optional.ofNullable( result ).map( Object::toString ).orElse( "" );
+    }
+
+    /**
+     * The payload a client branches on, or null when this operation produced only text.
+     * <p>
+     * A record is its own payload, by the same rule the immediate path applies in
+     * {@code McpServerFactory.createCallToolResult}. Without that, a long running tool
+     * returning a record bare - which is what every other tool does - reached a polling
+     * caller with no structured content at all and its {@code toString()} as the text,
+     * so the result of a run differed depending on whether it was collected inline or
+     * through {@code getOperationStatus}. The alternative was making these tools alone
+     * wrap their payload, which is a rule with no reason a tool author could infer.
+     */
+    public Object getStructuredResult()
+    {
+        if ( result instanceof StructuredToolResult structured )
+        {
+            return structured.data();
+        }
+        return result instanceof Record ? result : null;
     }
 
     public Throwable getFailure()

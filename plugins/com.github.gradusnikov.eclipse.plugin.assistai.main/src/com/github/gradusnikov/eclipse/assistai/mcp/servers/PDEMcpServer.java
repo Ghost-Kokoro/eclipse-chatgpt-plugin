@@ -7,9 +7,13 @@ import java.util.Optional;
 
 import org.eclipse.e4.core.di.annotations.Creatable;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
+import com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.McpServer;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.Tool;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.ToolParam;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.PDEService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.RuntimeReloadService;
 
@@ -26,28 +30,36 @@ public class PDEMcpServer
     private RuntimeReloadService runtimeReloadService;
 
     @Tool(name = "getActiveTarget",
-          description = "Gets information about the currently active Eclipse target platform.",
-          type = "object")
-    public String getActiveTarget()
+          description = "Gets the Eclipse target platform the workspace is building against: its name, "
+              + "memento, whether it still exists, whether it is resolved and how many bundles it "
+              + "resolved to. status is RUNNING_PLATFORM when no .target file is set - an ordinary "
+              + "state, not a failure - and bundleCount is null unless the target is resolved.",
+          type = "object", outputType = ActiveTargetResponse.class)
+    public ActiveTargetResponse getActiveTarget()
     {
         return pdeService.getActiveTarget();
     }
 
     @Tool(name = "setActiveTarget",
-          description = "Sets the active Eclipse target platform from a .target file. Loads and activates the target definition.",
+          description = "Sets the active Eclipse target platform from a .target file, waits for it to load, "
+              + "and describes the target that is in force afterwards. status FAILED with a diagnostic "
+              + "means the load did not happen and the previous target is still active - check it before "
+              + "launching anything.",
           longExecution = true,
-          type = "object")
-    public String setActiveTarget(
+          type = "object", outputType = ActiveTargetResponse.class)
+    public ActiveTargetResponse setActiveTarget(
             @ToolParam(name = "targetFilePath", description = "The workspace-relative or absolute path to the .target file (e.g., '/MyProject/myplatform.target')") String targetFilePath)
     {
         return pdeService.setActiveTarget(targetFilePath);
     }
 
     @Tool(name = "reloadTarget",
-          description = "Reloads the currently active Eclipse target platform. Useful after target contents change on disk.",
+          description = "Reloads the currently active Eclipse target platform and describes the result. "
+              + "Useful after target contents change on disk. With no .target file set there is nothing "
+              + "to reload: that is reported as status RUNNING_PLATFORM, not as an error.",
           longExecution = true,
-          type = "object")
-    public String reloadTarget()
+          type = "object", outputType = ActiveTargetResponse.class)
+    public ActiveTargetResponse reloadTarget()
     {
         return pdeService.reloadTarget();
     }
@@ -58,8 +70,7 @@ public class PDEMcpServer
     public String restartMcpServers(
             @ToolParam(name = "delayMillis", description = "Delay before restart, from 500 to 30000 ms. Default: 1500", required = false) String delayMillis)
     {
-        Integer delay = Optional.ofNullable(delayMillis).filter(value -> !value.isBlank()).map(Integer::valueOf).orElse(null);
-        return runtimeReloadService.restartMcpServers(delay);
+        return runtimeReloadService.restartMcpServers(parseOptionalInt("delayMillis", delayMillis));
     }
 
     @Tool(name = "reloadWorkspaceBundle",
@@ -69,8 +80,8 @@ public class PDEMcpServer
             @ToolParam(name = "symbolicName", description = "Bundle symbolic name; it must also name an open workspace project") String symbolicName,
             @ToolParam(name = "delayMillis", description = "Delay before reload, from 500 to 30000 ms. Default: 1500", required = false) String delayMillis)
     {
-        Integer delay = Optional.ofNullable(delayMillis).filter(value -> !value.isBlank()).map(Integer::valueOf).orElse(null);
-        return runtimeReloadService.reloadWorkspaceBundle(symbolicName, delay);
+        return runtimeReloadService.reloadWorkspaceBundle(symbolicName,
+                parseOptionalInt("delayMillis", delayMillis));
     }
 
     @Tool(name = "runJUnitPluginTests",
@@ -83,8 +94,9 @@ public class PDEMcpServer
               + "'summary' (pass/fail counts) and 'results' (per-test details). "
               + "getOperationStatus will show these automatically while the run is in progress.",
           longExecution = true,
-          type = "object")
-    public String runJUnitPluginTests(
+          type = "object",
+          outputType = TestRunResponse.class)
+    public TestRunResponse runJUnitPluginTests(
             @ToolParam(name = "projectName",
                        description = "The exact Eclipse project name containing the plug-in test classes",
                        required = true)
@@ -126,37 +138,71 @@ public class PDEMcpServer
                        required = false)
             String launcherName)
     {
-        int timeoutSeconds = Optional.ofNullable(timeout).map(Integer::parseInt).orElse(60);
+        int timeoutSeconds = Optional.ofNullable(parseOptionalInt("timeout", timeout)).orElse(60);
         boolean coverage = Optional.ofNullable(withCoverage).map(Boolean::parseBoolean).orElse(false);
         boolean allPlugins = Optional.ofNullable(includeAllPlugins).map(Boolean::parseBoolean).orElse(false);
         List<String> extras = parseCommaSeparated(additionalBundles);
 
+        TestRunResponse response;
         if ( className != null && !className.isBlank() )
         {
             List<String> classes = parseCommaSeparated( className );
+            if ( classes.isEmpty() )
+            {
+                // A className of separators only ("," or " , ") is non-blank but names
+                // nothing, so it reached classes.get(0) on an empty list below.
+                throw new IllegalArgumentException(
+                    "Error: 'className' contains no class names: '" + className + "'." );
+            }
             if ( classes.size() > 1 )
             {
-                return pdeService.runJUnitPluginTestClasses(
+                response = pdeService.runJUnitPluginTestClasses(
                     projectName, classes, timeoutSeconds, allPlugins, extras, launcherName );
             }
             else
             {
-                return pdeService.runJUnitPluginTestClass(
+                response = pdeService.runJUnitPluginTestClass(
                     projectName, classes.get( 0 ), timeoutSeconds, coverage, allPlugins, extras, launcherName );
             }
         }
         else if ( packageName != null && !packageName.isBlank() )
         {
-            return pdeService.runJUnitPluginTestPackage(
+            response = pdeService.runJUnitPluginTestPackage(
                 projectName, packageName, timeoutSeconds, coverage, allPlugins, extras, launcherName );
         }
         else
         {
-            return pdeService.runJUnitPluginTests(
+            response = pdeService.runJUnitPluginTests(
                 projectName, timeoutSeconds, coverage, allPlugins, extras, launcherName );
         }
+        return response;
     }
 
+
+    /**
+     * An optional numeric argument. Every tool parameter arrives as a String, so a bad
+     * value has to be reported here - naming the parameter, because a bare
+     * {@code NumberFormatException} tells a caller with five optional parameters nothing
+     * about which one it got wrong.
+     *
+     * @return null when the argument was not supplied
+     */
+    private static Integer parseOptionalInt(String name, String value)
+    {
+        if (value == null || value.isBlank())
+        {
+            return null;
+        }
+        try
+        {
+            return Integer.valueOf(value.trim());
+        }
+        catch (NumberFormatException e)
+        {
+            throw new IllegalArgumentException(
+                "Invalid '" + name + "': '" + value + "' is not a whole number.");
+        }
+    }
 
     private List<String> parseCommaSeparated(String value)
     {

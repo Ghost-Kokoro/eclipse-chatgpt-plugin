@@ -14,8 +14,27 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.e4.core.di.annotations.Creatable;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MarkdownOutlineResponse;
+import com.github.gradusnikov.eclipse.assistai.resources.ContentRange;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
+import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
 import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
 
+import jakarta.inject.Inject;
+
+/**
+ * Navigates a Markdown document by its headings.
+ * <p>
+ * The outline is a list of headings with their levels and line ranges; a section is a
+ * range of the file, so it is returned as a {@link ResourceReadResult} like every
+ * other read. Neither carries line-number prefixes any more - the numbers are ranges
+ * in the result.
+ */
 @Creatable
 public class MarkdownService
 {
@@ -23,32 +42,58 @@ public class MarkdownService
     private static final Pattern SETEXT_H1 = Pattern.compile("^={3,}\\s*$");
     private static final Pattern SETEXT_H2 = Pattern.compile("^-{3,}\\s*$");
 
+    @Inject
+    AiIgnoreService aiIgnoreService;
+
     private static record HeadingInfo(int level, String text, int lineNumber) {}
 
-    private List<String> readFileLines(String projectName, String resourcePath)
+    /**
+     * The file, or a diagnostic saying why it could not be opened.
+     * <p>
+     * Resolution and reading are one step because every caller needs both the
+     * {@link IFile} - for the version an edit would quote - and its lines.
+     */
+    private record MarkdownFile( IFile file, List<String> lines, String language, Diagnostic diagnostic )
     {
-        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-        if (project == null || !project.exists())
+        static MarkdownFile failed( DiagnosticCode code, String message )
         {
-            throw new RuntimeException("Project not found: " + projectName);
+            return new MarkdownFile( null, List.of(), null, Diagnostic.fatal( code, message ) );
         }
-        if (!project.isOpen())
+    }
+
+    private MarkdownFile openFile( String projectName, String resourcePath )
+    {
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+        if ( project == null || !project.exists() )
         {
-            throw new RuntimeException("Project '" + projectName + "' is closed.");
+            return MarkdownFile.failed( DiagnosticCode.RESOURCE_NOT_FOUND, "Project '" + projectName + "' not found." );
         }
-        IPath path = IPath.fromPath(Path.of(resourcePath));
-        IFile file = project.getFile(path);
-        if (!file.exists())
+        if ( !project.isOpen() )
         {
-            throw new RuntimeException("File not found: " + resourcePath);
+            return MarkdownFile.failed( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                    "Project '" + projectName + "' is closed." );
         }
+
+        IFile file = project.getFile( IPath.fromPath( Path.of( resourcePath ) ) );
+        if ( !file.exists() )
+        {
+            return MarkdownFile.failed( DiagnosticCode.RESOURCE_NOT_FOUND,
+                    "File '" + resourcePath + "' does not exist in project '" + projectName + "'." );
+        }
+        if ( aiIgnoreService.isExcluded( file ) )
+        {
+            return MarkdownFile.failed( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                    "'" + resourcePath + "' is excluded from AI processing by .aiignore." );
+        }
+
         try
         {
-            return ResourceUtilities.readFileLines(file);
+            return new MarkdownFile( file, ResourceUtilities.readFileLines( file ),
+                    ResourceUtilities.getResourceFileType( file ), null );
         }
-        catch (IOException | CoreException e)
+        catch ( IOException | CoreException e )
         {
-            throw new RuntimeException("Failed to read file: " + e.getMessage(), e);
+            return MarkdownFile.failed( DiagnosticCode.INTERNAL_ERROR, "Error reading file: " + e.getMessage() );
         }
     }
 
@@ -99,112 +144,152 @@ public class MarkdownService
         return headings;
     }
 
-    public String getOutline(String projectName, String resourcePath)
+    /**
+     * The heading structure of a Markdown file.
+     * <p>
+     * A file with no headings is an empty list, not a failure: it is a fact about the
+     * document, and a caller that has to tell it apart from "the file is missing" by
+     * reading a sentence has been given the wrong result type.
+     */
+    public MarkdownOutlineResponse getOutline( String projectName, String resourcePath )
     {
-        List<String> lines = readFileLines(projectName, resourcePath);
-        List<HeadingInfo> headings = parseHeadings(lines);
-
-        if (headings.isEmpty())
+        MarkdownFile opened = openFile( projectName, resourcePath );
+        if ( opened.diagnostic() != null )
         {
-            return "No headings found in " + resourcePath + " (" + lines.size() + " lines total).";
+            return MarkdownOutlineResponse.failed( projectName, resourcePath, opened.diagnostic() );
         }
 
-        var sb = new StringBuilder();
-        sb.append("Markdown outline of ").append(resourcePath)
-          .append(" (").append(lines.size()).append(" lines total)\n\n");
+        List<String> lines = opened.lines();
+        List<HeadingInfo> headings = parseHeadings( lines );
+        List<MarkdownOutlineResponse.Heading> entries = new ArrayList<>();
 
-        for (int i = 0; i < headings.size(); i++)
+        for ( int i = 0; i < headings.size(); i++ )
         {
-            HeadingInfo h = headings.get(i);
-            int endLine = (i + 1 < headings.size()) ? headings.get(i + 1).lineNumber - 1 : lines.size();
-            int sectionLines = endLine - h.lineNumber + 1;
-
-            String indent = "  ".repeat(h.level - 1);
-            sb.append(indent)
-              .append("#".repeat(h.level)).append(" ").append(h.text)
-              .append("  [line ").append(h.lineNumber)
-              .append(", ").append(sectionLines).append(" lines]")
-              .append("\n");
+            HeadingInfo heading = headings.get( i );
+            int endLine = ( i + 1 < headings.size() ) ? headings.get( i + 1 ).lineNumber() - 1 : lines.size();
+            entries.add( new MarkdownOutlineResponse.Heading(
+                    i + 1,
+                    heading.level(),
+                    heading.text(),
+                    new ContentRange( heading.lineNumber(), 1, Math.max( heading.lineNumber(), endLine ), 1 ) ) );
         }
 
-        return sb.toString();
+        return MarkdownOutlineResponse.of( projectName, opened.file().getProjectRelativePath().toString(),
+                lines.size(), entries );
     }
 
-    public String getSection(String projectName, String resourcePath, String heading, boolean includeSubsections)
+    /**
+     * One section of a Markdown file, addressed by heading text or by its 1-based
+     * index in the outline.
+     * <p>
+     * The section is a contiguous range of a workspace file, so it is a
+     * {@link ResourceReadResult}: exact content, {@code returnedRange} saying which
+     * lines it is, and a {@code version} an edit can quote. {@code truncated} is false
+     * - the whole section is returned; that it is not the whole file is what
+     * {@code returnedRange} and the {@code PARTIAL} status are for.
+     *
+     * @param heading a 1-based index from {@link #getOutline}, or a case-insensitive
+     *            substring of a heading's text
+     * @param includeSubsections whether the section runs to the next heading of the
+     *            same or a higher level rather than to the next heading of any level
+     */
+    public ResourceReadResult getSection( String projectName, String resourcePath, String heading,
+                                          boolean includeSubsections )
     {
-        List<String> lines = readFileLines(projectName, resourcePath);
-        List<HeadingInfo> headings = parseHeadings(lines);
-
-        if (headings.isEmpty())
+        MarkdownFile opened = openFile( projectName, resourcePath );
+        if ( opened.diagnostic() != null )
         {
-            return "No headings found in " + resourcePath;
+            return ResourceReadResult.failed( projectName, resourcePath, opened.diagnostic() );
         }
 
-        HeadingInfo target = null;
-        int targetIndex = -1;
+        IFile file = opened.file();
+        String filePath = file.getProjectRelativePath().toString();
+        List<String> lines = opened.lines();
+        List<HeadingInfo> headings = parseHeadings( lines );
 
-        // Try numeric index first (1-based)
-        try
+        if ( headings.isEmpty() )
         {
-            int index = Integer.parseInt(heading.trim()) - 1;
-            if (index >= 0 && index < headings.size())
-            {
-                target = headings.get(index);
-                targetIndex = index;
-            }
-        }
-        catch (NumberFormatException e)
-        {
-            // Not a number - search by text (case-insensitive substring match)
+            return ResourceReadResult.failed( projectName, filePath, Diagnostic.fatal(
+                    DiagnosticCode.RESOURCE_NOT_FOUND, "'" + resourcePath + "' has no Markdown headings." ) );
         }
 
-        if (target == null)
+        int targetIndex = indexOf( headings, heading );
+        if ( targetIndex < 0 )
         {
-            String headingLower = heading.toLowerCase().trim();
-            for (int i = 0; i < headings.size(); i++)
-            {
-                if (headings.get(i).text.toLowerCase().contains(headingLower))
-                {
-                    target = headings.get(i);
-                    targetIndex = i;
-                    break;
-                }
-            }
+            return ResourceReadResult.failed( projectName, filePath, Diagnostic.fatal(
+                    DiagnosticCode.RESOURCE_NOT_FOUND, "No heading matches '" + heading
+                            + "'. Use getMarkdownOutline to see the available headings and their indices." ) );
         }
 
-        if (target == null)
-        {
-            return "Heading not found: '" + heading + "'. Use getMarkdownOutline to see available headings.";
-        }
-
-        int startLine = target.lineNumber;
+        HeadingInfo target = headings.get( targetIndex );
+        int startLine = target.lineNumber();
         int endLine = lines.size();
 
-        for (int i = targetIndex + 1; i < headings.size(); i++)
+        for ( int i = targetIndex + 1; i < headings.size(); i++ )
         {
-            HeadingInfo next = headings.get(i);
-            if (includeSubsections)
+            HeadingInfo next = headings.get( i );
+            if ( !includeSubsections || next.level() <= target.level() )
             {
-                if (next.level <= target.level)
-                {
-                    endLine = next.lineNumber - 1;
-                    break;
-                }
-            }
-            else
-            {
-                endLine = next.lineNumber - 1;
+                endLine = next.lineNumber() - 1;
                 break;
             }
         }
 
-        int width = String.valueOf(lines.size()).length();
-        var sb = new StringBuilder();
-        for (int i = startLine - 1; i < endLine && i < lines.size(); i++)
+        StringBuilder content = new StringBuilder();
+        for ( int i = startLine - 1; i < endLine && i < lines.size(); i++ )
         {
-            sb.append(String.format("%" + width + "d\t%s\n", i + 1, lines.get(i)));
+            content.append( lines.get( i ) ).append( "\n" );
         }
 
-        return sb.toString();
+        boolean whole = startLine == 1 && endLine >= lines.size();
+        return new ResourceReadResult(
+                whole ? ResourceReadResult.ReadStatus.OK : ResourceReadResult.ReadStatus.PARTIAL,
+                ResourceDescriptor.fromWorkspaceFile( file, "getMarkdownSection" ).uri().toString(),
+                projectName,
+                filePath,
+                opened.language(),
+                ResourceVersion.of( file ),
+                new ContentRange( startLine, 1, Math.max( startLine, endLine ), 1 ),
+                lines.size(),
+                content.toString(),
+                SourceOrigin.WORKSPACE_SOURCE,
+                false,
+                false,
+                List.of(),
+                Diagnostic.none() );
+    }
+
+    /**
+     * The index of the heading a caller named, or -1.
+     * <p>
+     * A numeric argument is taken as a 1-based index first, because two sections of a
+     * long document routinely share a title and matching by text would then silently
+     * fetch the wrong one.
+     */
+    private int indexOf( List<HeadingInfo> headings, String heading )
+    {
+        try
+        {
+            int index = Integer.parseInt( heading.trim() ) - 1;
+            if ( index >= 0 && index < headings.size() )
+            {
+                return index;
+            }
+            return -1;
+        }
+        catch ( NumberFormatException e )
+        {
+            // Not a number - fall through to a text match.
+        }
+
+        String needle = heading.toLowerCase().trim();
+        for ( int i = 0; i < headings.size(); i++ )
+        {
+            if ( headings.get( i ).text().toLowerCase().contains( needle ) )
+            {
+                return i;
+            }
+        }
+        return -1;
     }
 }
