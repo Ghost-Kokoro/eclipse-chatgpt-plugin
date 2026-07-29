@@ -29,12 +29,12 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IPackageFragment;
 import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.JavaCore;
-import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.pde.core.target.ITargetDefinition;
 import org.eclipse.pde.core.target.ITargetHandle;
 import org.eclipse.pde.core.target.ITargetPlatformService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -54,7 +54,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.PDEService;
 
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
 @TestMethodOrder( MethodOrderer.OrderAnnotation.class )
-public class ServicePluginPDETest
+public class ServicePluginPDETest extends AbstractOperationPDETest
 {
     private static final String TEST_PLUGIN_PROJECT = "PDEServiceTest_PluginProject";
 
@@ -96,6 +96,7 @@ public class ServicePluginPDETest
         }
 
         service = ContextInjectionFactory.make( PDEService.class, context );
+        initOperationRegistry( context );
 
         createPluginTestProject();
     }
@@ -156,13 +157,25 @@ public class ServicePluginPDETest
         IFolder metaInf = project.getFolder( "META-INF" );
         if ( !metaInf.exists() ) metaInf.create( true, true, monitor );
 
+        // Determine the default VM's major Java version so compliance settings match at runtime
+        org.eclipse.jdt.launching.IVMInstall defaultVm = org.eclipse.jdt.launching.JavaRuntime.getDefaultVMInstall();
+        String javaVersion = "21"; // fallback
+        if ( defaultVm instanceof org.eclipse.jdt.launching.AbstractVMInstall avm )
+        {
+            String v = avm.getJavaVersion();
+            if ( v != null )
+            {
+                javaVersion = v.contains( "." ) ? v.substring( 0, v.indexOf( '.' ) ) : v;
+            }
+        }
+
         String manifest =
             "Manifest-Version: 1.0\n" +
             "Bundle-ManifestVersion: 2\n" +
             "Bundle-Name: PDE Test Plugin\n" +
             "Bundle-SymbolicName: " + TEST_PLUGIN_PROJECT + "\n" +
             "Bundle-Version: 1.0.0\n" +
-            "Bundle-RequiredExecutionEnvironment: JavaSE-21\n" +
+            "Bundle-RequiredExecutionEnvironment: JavaSE-" + javaVersion + "\n" +
             "Require-Bundle: org.junit\n" +
             "Export-Package: com.example.pdetest\n";
         createFile( project, "META-INF/MANIFEST.MF", manifest, monitor );
@@ -173,8 +186,15 @@ public class ServicePluginPDETest
             "bin.includes = META-INF/,.\n";
         createFile( project, "build.properties", buildProps, monitor );
 
+        // Force Java compliance to match the default VM
+        javaProject.setOption( JavaCore.COMPILER_SOURCE, javaVersion );
+        javaProject.setOption( JavaCore.COMPILER_COMPLIANCE, javaVersion );
+        javaProject.setOption( JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, javaVersion );
+
         IClasspathEntry srcEntry = JavaCore.newSourceEntry( srcFolder.getFullPath() );
-        IClasspathEntry jreEntry = JavaRuntime.getDefaultJREContainerEntry();
+        // Use the default JRE container — resolves to whatever VM Eclipse is configured to use
+        IClasspathEntry jreEntry = JavaCore.newContainerEntry(
+            IPath.fromOSString( org.eclipse.jdt.launching.JavaRuntime.JRE_CONTAINER ) );
         IClasspathEntry pdeEntry = JavaCore.newContainerEntry(
             IPath.fromOSString( "org.eclipse.pde.core.requiredPlugins" ) );
 
@@ -426,58 +446,60 @@ public class ServicePluginPDETest
 
     @Test
     @Order( 20 )
-    public void testRunJUnitPluginTestClass_realProject_passes()
+    public void testRunJUnitPluginTestClass_realProject_passes() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120 );
-        System.out.println( "runJUnitPluginTestClass result: " + result );
-        assumeLaunched( result );
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-        assertTrue( result.summary().passed() > 0, result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_realProject_passes", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120 );
+            System.out.println( "runJUnitPluginTestClass result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 21 )
-    public void testRunJUnitPluginTests_realProject_launches()
+    public void testRunJUnitPluginTests_realProject_launches() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTests(
-            TEST_PLUGIN_PROJECT,
-            120 );
-        System.out.println( "runJUnitPluginTests result: " + result );
-        assumeLaunched( result );
-        // A wrong CONTAINER format used to surface as "does not exist" prose; it is now
-        // a launch that never starts, which is what FAILED_TO_START names.
-        assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
-            result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTests_realProject_launches", () -> {
+            TestRunResponse result = service.runJUnitPluginTests(
+                TEST_PLUGIN_PROJECT,
+                120 );
+            System.out.println( "runJUnitPluginTests result: " + result );
+            assertLaunched( result );
+            // A wrong CONTAINER format used to surface as "does not exist" prose; it is now
+            // a launch that never starts, which is what FAILED_TO_START names.
+            assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
+                result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 22 )
-    public void testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce()
+    public void testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTestClasses(
-            TEST_PLUGIN_PROJECT,
-            List.of( "com.example.pdetest.SimplePluginTest",
-                     "com.example.pdetest.SecondPluginTest",
-                     "com.example.pdetest.SimplePluginTest" ),
-            120 );
-        System.out.println( "runJUnitPluginTestClasses result: " + result );
-        assumeLaunched( result );
-        // The repeated class is de-duplicated, so two tests run, not three.
-        assertEquals( 2, result.summary().total(), result.summaryText() );
-        assertEquals( 2, result.summary().passed(), result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClasses(
+                TEST_PLUGIN_PROJECT,
+                List.of( "com.example.pdetest.SimplePluginTest",
+                         "com.example.pdetest.SecondPluginTest",
+                         "com.example.pdetest.SimplePluginTest" ),
+                120 );
+            System.out.println( "runJUnitPluginTestClasses result: " + result );
+            assertLaunched( result );
+            // The repeated class is de-duplicated, so two tests run, not three.
+            assertEquals( 2, result.summary().total(), result.summaryText() );
+            assertEquals( 2, result.summary().passed(), result.summaryText() );
+        } );
     }
 
-    /**
-     * The PDE launcher is not always available in the harness this test itself runs
-     * under - a nested plug-in launch. That is an environment limitation, not a result.
-     */
-    private static void assumeLaunched( TestRunResponse result )
+    private static void assertLaunched( TestRunResponse result )
     {
-        assumeTrue( result.status() != RunStatus.FAILED_TO_START,
-            "Skipping: PDE launcher not available or project has errors (" + result.summaryText() + ")" );
+        assertTrue( result.status() != RunStatus.FAILED_TO_START,
+            "Skipping: PDE launcher failed to start (" + result.summaryText() + ")" );
     }
 
     // -------------------------------------------------------------------------
@@ -540,41 +562,48 @@ public class ServicePluginPDETest
 
     @Test
     @Order( 30 )
-    public void testRunJUnitPluginTestClass_selectedPluginsMode_realProject()
+    public void testRunJUnitPluginTestClass_selectedPluginsMode_realProject() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120, false, false, List.of() );
-        System.out.println( "runJUnitPluginTestClass (selected) result: " + result );
-        assumeLaunched( result );
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-        assertTrue( result.summary().passed() > 0, result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_selectedPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120, false, false, List.of() );
+            System.out.println( "runJUnitPluginTestClass (selected) result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 31 )
-    public void testRunJUnitPluginTestClass_allPluginsMode_realProject()
+    public void testRunJUnitPluginTestClass_allPluginsMode_realProject() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120, false, true, List.of() );
-        System.out.println( "runJUnitPluginTestClass (all) result: " + result );
-        assumeLaunched( result );
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-        assertTrue( result.summary().passed() > 0, result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_allPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120, false, true, List.of() );
+            System.out.println( "runJUnitPluginTestClass (all) result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 32 )
-    public void testRunJUnitPluginTests_selectedPluginsMode_realProject()
+    public void testRunJUnitPluginTests_selectedPluginsMode_realProject() throws Exception
     {
-        TestRunResponse result = service.runJUnitPluginTests(
-            TEST_PLUGIN_PROJECT, 120, false, false, List.of() );
-        System.out.println( "runJUnitPluginTests (selected) result: " + result );
-        assumeLaunched( result );
-        assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
-            result.summaryText() );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTests_selectedPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTests(
+                TEST_PLUGIN_PROJECT, 120, false, false, List.of() );
+            System.out.println( "runJUnitPluginTests (selected) result: " + result );
+            assertLaunched( result );
+            assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
+                result.summaryText() );
+        } );
     }
+
 }

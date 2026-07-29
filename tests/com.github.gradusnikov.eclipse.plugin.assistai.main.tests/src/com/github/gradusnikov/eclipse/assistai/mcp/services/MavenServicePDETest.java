@@ -24,6 +24,7 @@ import org.eclipse.core.runtime.ILogListener;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.e4.core.contexts.ContextInjectionFactory;
 import org.eclipse.e4.core.contexts.EclipseContextFactory;
 import org.eclipse.e4.core.contexts.IEclipseContext;
@@ -166,9 +167,31 @@ public class MavenServicePDETest {
     
     @AfterEach
     public void afterEach() throws CoreException {
-        // Clean up the test project
         if (project != null && project.exists()) {
-            project.delete(true, true, monitor);
+            // Wait for auto-build / M2E background jobs that may hold file locks on Windows
+            try {
+                Job.getJobManager().join(ResourcesPlugin.FAMILY_AUTO_BUILD, monitor);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            // Close the project first to release any file handles before deleting
+            if (project.isOpen()) {
+                project.close(monitor);
+            }
+            // Retry deletion to handle transient Windows file locks (e.g. maven2Builder)
+            CoreException lastException = null;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                try {
+                    project.delete(true, true, monitor);
+                    return;
+                } catch (CoreException e) {
+                    lastException = e;
+                    try { Thread.sleep(300); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                }
+            }
+            if (lastException != null) {
+                throw lastException;
+            }
         }
     }
     

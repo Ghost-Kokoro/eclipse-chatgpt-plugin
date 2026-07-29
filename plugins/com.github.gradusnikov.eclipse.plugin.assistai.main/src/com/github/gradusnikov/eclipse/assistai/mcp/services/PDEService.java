@@ -1,4 +1,4 @@
-package com.github.gradusnikov.eclipse.assistai.mcp.services;
+﻿package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +34,8 @@ import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.jobs.IJobChangeEvent;
 import org.eclipse.core.runtime.jobs.JobChangeAdapter;
 import org.eclipse.debug.core.DebugPlugin;
+import org.eclipse.debug.core.ILaunch;
+import org.eclipse.debug.core.ILaunchListener;
 import org.eclipse.debug.core.ILaunchConfiguration;
 import org.eclipse.debug.core.ILaunchConfigurationType;
 import org.eclipse.debug.core.ILaunchConfigurationWorkingCopy;
@@ -384,6 +386,59 @@ public class PDEService
     }
 
     /**
+     * Runs a single JUnit Plug-in Test method.
+     */
+    public TestRunResponse runJUnitPluginTestMethod( String projectName, String className, String methodName,
+                                                     Integer timeout )
+    {
+        return runJUnitPluginTestMethod( projectName, className, methodName, timeout, false, false, List.of(), null );
+    }
+
+    /**
+     * Runs a single JUnit Plug-in Test method, optionally using a saved launch configuration as a base.
+     *
+     * @param launcherName optional saved launch config name; when set all its settings are
+     *                     reused and only the project/class/method targeting attributes are overridden
+     */
+    public TestRunResponse runJUnitPluginTestMethod( String projectName, String className, String methodName,
+                                                     Integer timeout, boolean withCoverage,
+                                                     boolean includeAllPlugins, List<String> additionalBundles,
+                                                     String launcherName )
+    {
+        Objects.requireNonNull( projectName, "Project name cannot be null" );
+        Objects.requireNonNull( className, "Class name cannot be null" );
+        Objects.requireNonNull( methodName, "Method name cannot be null" );
+        int waitSeconds = normalizeTimeout( timeout );
+        long startMillis = System.currentTimeMillis();
+
+        try
+        {
+            IJavaProject javaProject = getJavaProject( projectName );
+            IType type = javaProject.findType( className );
+            if ( type == null )
+            {
+                return TestRunResponse.notStarted( projectName, List.of( className ),
+                    Diagnostic.fatal( DiagnosticCode.TEST_CLASS_NOT_FOUND,
+                        "Class '" + className + "' not found in project '" + projectName + "'." ),
+                    elapsed( startMillis ) );
+            }
+            return launchJUnitPluginTests( javaProject, null, List.of( type ), methodName, waitSeconds,
+                withCoverage, includeAllPlugins, additionalBundles, launcherName );
+        }
+        catch ( ProjectNotFoundException e )
+        {
+            return TestRunResponse.notStarted( projectName, List.of( className ),
+                Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, e.getMessage() ), elapsed( startMillis ) );
+        }
+        catch ( IllegalArgumentException | CoreException e )
+        {
+            return TestRunResponse.notStarted( projectName, List.of( className ),
+                Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR, "Error running plug-in tests: " + e.getMessage() ),
+                elapsed( startMillis ) );
+        }
+    }
+
+    /**
      * Runs selected JUnit Plug-in Test classes in a single PDE launch.
      */
     public TestRunResponse runJUnitPluginTestClasses( String projectName, List<String> classNames,
@@ -578,8 +633,22 @@ public class PDEService
                                             List<IType> testClasses, int timeout, boolean withCoverage,
                                             boolean includeAllPlugins, List<String> additionalBundles )
     {
-        return launchJUnitPluginTests( javaProject, packageFragment, testClasses, timeout,
+        return launchJUnitPluginTests( javaProject, packageFragment, testClasses, null, timeout,
             withCoverage, includeAllPlugins, additionalBundles, null );
+    }
+
+    /**
+     * Core PDE JUnit launch. When {@code methodName} is non-null, only that single test method
+     * is executed via {@link SelectedJUnitPluginLaunchDelegate} for true single-method isolation.
+     * Delegates to the main overload with methodName forwarded through targeting.
+     */
+    private TestRunResponse launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
+                                            List<IType> testClasses, String methodName, int timeout,
+                                            boolean withCoverage, boolean includeAllPlugins,
+                                            List<String> additionalBundles, String launcherName )
+    {
+        return launchJUnitPluginTests( javaProject, packageFragment, testClasses, methodName, timeout,
+            withCoverage, includeAllPlugins, additionalBundles, launcherName, true );
     }
 
     /**
@@ -590,6 +659,22 @@ public class PDEService
                                             List<IType> testClasses, int timeout, boolean withCoverage,
                                             boolean includeAllPlugins, List<String> additionalBundles,
                                             String launcherName )
+    {
+        return launchJUnitPluginTests( javaProject, packageFragment, testClasses, null, timeout,
+            withCoverage, includeAllPlugins, additionalBundles, launcherName, false );
+    }
+
+    /**
+     * Core PDE JUnit launch — single entry point.
+     * When {@code launcherName} is non-null, that saved configuration is used as a base.
+     * When {@code methodName} is non-null and {@code singleMethod} is true, only that method
+     * is executed via {@link SelectedJUnitPluginLaunchDelegate}.
+     */
+    private TestRunResponse launchJUnitPluginTests( IJavaProject javaProject, IPackageFragment packageFragment,
+                                            List<IType> testClasses, String methodName, int timeout,
+                                            boolean withCoverage, boolean includeAllPlugins,
+                                            List<String> additionalBundles, String launcherName,
+                                            boolean singleMethod )
     {
         CountDownLatch latch = new CountDownLatch( 1 );
         UnitTestService.TestRunResult[] testRunResults = new UnitTestService.TestRunResult[1];
@@ -658,11 +743,10 @@ public class PDEService
 
             if ( launcherName != null && !launcherName.isBlank() )
             {
-                // Use the named saved config as a base — only override targeting attributes
+                // Use the named saved config as a base ΓÇö only override targeting attributes
                 ILaunchConfiguration base = findExistingLaunchConfig( launchManager, launcherName );
                 if ( base == null )
                 {
-                    JUnitCore.removeTestRunListener( listener );
                     return TestRunResponse.notStarted( projectName, requestedClasses,
                         Diagnostic.fatal( DiagnosticCode.LAUNCH_CONFIGURATION_NOT_FOUND,
                             "Launch configuration not found: " + launcherName ),
@@ -673,14 +757,15 @@ public class PDEService
             else
             {
                 boolean selectedClassLaunch = testClasses.size() > 1;
-                String launchTypeId = selectedClassLaunch
+                boolean singleMethodLaunch = singleMethod && testClasses.size() == 1
+                    && methodName != null && !methodName.isBlank();
+                String launchTypeId = ( selectedClassLaunch || singleMethodLaunch )
                     ? SelectedJUnitPluginLaunchDelegate.LAUNCH_CONFIGURATION_TYPE
                     : "org.eclipse.pde.ui.JunitLaunchConfig";
                 ILaunchConfigurationType type = launchManager.getLaunchConfigurationType( launchTypeId );
 
                 if ( type == null )
                 {
-                    JUnitCore.removeTestRunListener( listener );
                     return TestRunResponse.notStarted( projectName, requestedClasses,
                         Diagnostic.fatal( DiagnosticCode.PDE_LAUNCH_TYPE_MISSING,
                             "PDE JUnit Plug-in Test launch configuration type '" + launchTypeId
@@ -690,7 +775,7 @@ public class PDEService
 
                 String launchName = buildLaunchName( javaProject, packageFragment, testClasses );
                 ILaunchConfiguration existing = findExistingLaunchConfig( launchManager, launchName );
-                if ( existing != null )
+                if ( existing != null && existing.getType().equals(type) )
                 {
                     workingCopy = existing.getWorkingCopy();
                 }
@@ -701,7 +786,7 @@ public class PDEService
             }
 
             // Always override targeting attributes — everything else from the base config is kept
-            applyTestTargeting( workingCopy, javaProject, packageFragment, testClasses );
+            applyTestTargeting( workingCopy, javaProject, packageFragment, testClasses, methodName );
 
             // Only set TEST_KIND and workspace/bundle config when not using a named launcher
             if ( launcherName == null || launcherName.isBlank() )
@@ -746,112 +831,176 @@ public class PDEService
 
             ILaunchConfiguration configuration = workingCopy.doSave();
 
+            // Log workspace location so it's visible in test output and MCP tool results
+            String wsLocation = configuration.getAttribute( IPDELauncherConstants.LOCATION, (String) null );
+            assert wsLocation != null;
+            System.out.println( "[PDEService] Test workspace: " + wsLocation );
+
             boolean useCoverage = withCoverage && coverageService.isCoverageAvailable();
             String launchMode = useCoverage ? coverageService.getCoverageLaunchMode() : ILaunchManager.RUN_MODE;
 
+            // Equinox can request a restart (exit code 23 = IApplication.EXIT_RESTART) on the
+            // first boot of a workspace when it needs to rewire bundles (reused workspace/config).
+            // Watch for the auto-restart launch: when our launch exits with code 23, PDE's
+            // LaunchListener.launchTerminated() synchronously calls doRestart(), which creates a
+            // new ILaunch for the same config with IPDEConstants.RESTART=true. Capture it here.
+            String configName = configuration.getName();
+            org.eclipse.debug.core.ILaunch[] launchRef = new org.eclipse.debug.core.ILaunch[1];
+            org.eclipse.debug.core.ILaunch[] restartLaunchRef = new org.eclipse.debug.core.ILaunch[1];
+            ILaunchListener restartLaunchListener = new ILaunchListener()
+            {
+                @Override
+                public void launchAdded( ILaunch launch )
+                {
+                    try
+                    {
+                        ILaunchConfiguration lc = launch.getLaunchConfiguration();
+                        if ( launchRef[0] != null && launchRef[0].isTerminated()
+                                && getRawExitCode( launchRef[0] ) == org.eclipse.equinox.app.IApplication.EXIT_RESTART
+                                && lc != null && lc.getName().equals( configName )
+                                && lc.getAttribute( org.eclipse.pde.internal.launching.IPDEConstants.RESTART, false ) )
+                        {
+                            restartLaunchRef[0] = launch;
+                        }
+                    }
+                    catch ( CoreException ignored ) {}
+                }
+                @Override public void launchRemoved( ILaunch launch ) {}
+                @Override public void launchChanged( ILaunch launch ) {}
+            };
+
+            ILaunchManager launchManagerForListener = DebugPlugin.getDefault().getLaunchManager();
+            launchManagerForListener.addLaunchListener( restartLaunchListener );
             long launchStartTime = System.currentTimeMillis();
             CoreException[] launchError = new CoreException[1];
-            org.eclipse.debug.core.ILaunch[] launchRef = new org.eclipse.debug.core.ILaunch[1];
-            sync.asyncExec( () -> {
-                try
-                {
-                    launchRef[0] = configuration.launch( launchMode, new NullProgressMonitor() );
-                }
-                catch ( CoreException e )
-                {
-                    launchError[0] = e;
-                    latch.countDown();
-                    logger.log( org.eclipse.core.runtime.Status.error( "Error launching plug-in tests", e ) );
-                }
-            } );
-
-            // How long the CALLER is prepared to wait is the framework's business: once its
-            // inline wait elapses it hands the caller an operationId and this thread keeps
-            // going. The bound here is only a backstop against a JVM that never reports and
-            // never dies.
-            // Run as an MCP operation, the caller has already been handed an operationId and
-            // the only bound left is a backstop. Called directly - from a test, an agent -
-            // there is no framework waiting for us, so the caller's timeout is still the bound.
-            long waitBoundMillis = operation.isPresent()
-                    ? TimeUnit.MINUTES.toMillis( MAX_TEST_RUN_MINUTES )
-                    : TimeUnit.SECONDS.toMillis( timeout );
-            long deadline = System.currentTimeMillis() + waitBoundMillis;
-            Display display = Display.getCurrent();
-            boolean completed = false;
-            boolean attached = false;
-            while ( !completed && System.currentTimeMillis() < deadline )
+            try
             {
-                if ( display != null && !display.isDisposed() )
-                {
-                    while ( display.readAndDispatch() )
+                sync.asyncExec( () -> {
+                    try
                     {
+                        launchRef[0] = configuration.launch( launchMode, new NullProgressMonitor() );
+                    }
+                    catch ( CoreException e )
+                    {
+                        launchError[0] = e;
+                        latch.countDown();
+                        logger.log( org.eclipse.core.runtime.Status.error( "Error launching plug-in tests", e ) );
+                    }
+                } );
+
+                // How long the CALLER is prepared to wait is the framework's business: once its
+                // inline wait elapses it hands the caller an operationId and this thread keeps
+                // going. The bound here is only a backstop against a JVM that never reports and
+                // never dies.
+                // Run as an MCP operation, the caller has already been handed an operationId and
+                // the only bound left is a backstop. Called directly - from a test, an agent -
+                // there is no framework waiting for us, so the caller's timeout is still the bound.
+                long waitBoundMillis = operation.isPresent()
+                        ? TimeUnit.MINUTES.toMillis( MAX_TEST_RUN_MINUTES )
+                        : TimeUnit.SECONDS.toMillis( timeout );
+                long deadline = System.currentTimeMillis() + waitBoundMillis;
+                Display display = Display.getCurrent();
+                boolean completed = false;
+                boolean attached = false;
+                while ( !completed && System.currentTimeMillis() < deadline )
+                {
+                    if ( display != null && !display.isDisposed() )
+                    {
+                        while ( display.readAndDispatch() )
+                        {
+                        }
+                    }
+                    if ( !attached && launchRef[0] != null )
+                    {
+                        // The launch is asynchronous, so it only exists once the UI thread has run
+                        // it. Streams the test instance's output into the operation and makes
+                        // canceling it terminate the JVM.
+                        attached = true;
+                        org.eclipse.debug.core.ILaunch launched = launchRef[0];
+                        operation.ifPresent( op -> ProcessOutputSource.attach( op, launched ) );
+                    }
+                    completed = latch.await( 100, TimeUnit.MILLISECONDS );
+                    if ( !completed && launchRef[0] != null && launchRef[0].isTerminated() )
+                    {
+                        // When Equinox needs to rewire bundles it exits with code 23 and PDE's
+                        // LaunchListener synchronously creates a restart launch before marking
+                        // the original terminated. Switch tracking to the restart launch.
+                        if ( testRunResults[0] == null
+                            && getRawExitCode( launchRef[0] ) == org.eclipse.equinox.app.IApplication.EXIT_RESTART
+                            && restartLaunchRef[0] != null )
+                        {
+                            String msg = "[PDEService] Equinox requested restart (exit 23) —"
+                                + " bundle cache is now warm, following auto-restarted launch";
+                            System.out.println( msg );
+                            operation.ifPresent( op -> op.setProgress( msg ) );
+                            launchRef[0] = restartLaunchRef[0];
+                            restartLaunchRef[0] = null;
+                            attached = false; // re-attach process output to the new launch
+                        }
+                        else
+                        {
+                            completed = true;
+                        }
                     }
                 }
-                if ( !attached && launchRef[0] != null )
+
+                if ( launchError[0] != null )
                 {
-                    // The launch is asynchronous, so it only exists once the UI thread has run
-                    // it. Streams the test instance's output into the operation and makes
-                    // cancelling it terminate the JVM.
-                    attached = true;
-                    org.eclipse.debug.core.ILaunch launched = launchRef[0];
-                    operation.ifPresent( op -> ProcessOutputSource.attach( op, launched ) );
+                    return TestRunResponse.notStarted( projectName, requestedClasses,
+                        Diagnostic.fatal( DiagnosticCode.DEPENDENCY_RESOLUTION_FAILED,
+                            "Error launching plug-in tests: " + launchError[0].getMessage() ),
+                        elapsed( runStartMillis ) );
                 }
-                completed = latch.await( 100, TimeUnit.MILLISECONDS );
-                if ( !completed && launchRef[0] != null && launchRef[0].isTerminated() )
+                if ( !completed )
                 {
-                    completed = true;
+                    // Whatever was collected before the deadline is still reported: a run
+                    // that timed out after 30 of 40 tests knows more than "it timed out".
+                    return abandoned( testRunResults[0], RunStatus.TIMED_OUT, projectName, requestedClasses,
+                        Diagnostic.retryable( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
+                            "The test run did not report results in time." ),
+                        runStartMillis );
                 }
-            }
 
-            if ( launchError[0] != null )
-            {
-                return TestRunResponse.notStarted( projectName, requestedClasses,
-                    Diagnostic.fatal( DiagnosticCode.DEPENDENCY_RESOLUTION_FAILED,
-                        "Error launching plug-in tests: " + launchError[0].getMessage() ),
-                    elapsed( runStartMillis ) );
-            }
-            if ( !completed )
-            {
-                // Whatever was collected before the deadline is still reported: a run
-                // that timed out after 30 of 40 tests knows more than "it timed out".
-                return abandoned( testRunResults[0], RunStatus.TIMED_OUT, projectName, requestedClasses,
-                    Diagnostic.retryable( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
-                        "The test run did not report results in time." ),
-                    runStartMillis );
-            }
-            if ( testRunResults[0] == null )
-            {
-                return TestRunResponse.notStarted( projectName, requestedClasses,
-                    Diagnostic.fatal( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
-                        "No test results collected. The test run may have failed to start." ),
-                    elapsed( runStartMillis ) );
-            }
+                // The test session can finish just before the workbench process releases
+                // its workspace lock. Wait briefly so an immediate rerun of the same
+                // selection can safely reuse its workspace.
+                waitForLaunchTermination( launchRef[0] );
 
-            // The test session can finish just before the workbench process releases
-            // its workspace lock. Wait briefly so an immediate rerun of the same
-            // selection can safely reuse its workspace.
-            waitForLaunchTermination( launchRef[0] );
+                if ( testRunResults[0] == null )
+                {
+                    return TestRunResponse.notStarted( projectName, requestedClasses,
+                        Diagnostic.fatal( DiagnosticCode.TEST_RESULTS_NOT_REPORTED,
+                            "No test results collected. The test run may have failed to start."
+                                + "\nCheck the console output of the launch or the workspace log file."
+                                + ( launchRef[0] != null ? "\n\nEclipse exit code: " + getExitCode( launchRef[0] ) : "" ) ),
+                        elapsed( runStartMillis ) );
+                }
 
-            CoverageResult coverage = null;
-            if ( withCoverage && !useCoverage )
-            {
-                coverage = CoverageResult.unavailable();
+                CoverageResult coverage = null;
+                if ( withCoverage && !useCoverage )
+                {
+                    coverage = CoverageResult.unavailable();
+                }
+                else if ( useCoverage )
+                {
+                    String execFile = coverageService.waitForLatestCoverageFile( launchStartTime, 10000 );
+                    coverage = CoverageResult.of( execFile,
+                        coverageService.formatCoverageInfo( execFile, projectName ) );
+                }
+
+                List<Diagnostic> diagnostics = coverage != null && !coverage.available()
+                    ? List.of( Diagnostic.fatal( DiagnosticCode.COVERAGE_UNAVAILABLE,
+                        "Coverage was requested but no coverage tooling (EclEmma/JaCoCo) is installed." ) )
+                    : List.of();
+
+                TestSummary counts = testRunResults[0].summary();
+                return testRunResults[0].snapshot( TestRunResponse.terminalStatus( counts ), projectName,
+                    requestedClasses, coverage, diagnostics, elapsed( runStartMillis ) );
             }
-            else if ( useCoverage )
+            finally
             {
-                String execFile = coverageService.waitForLatestCoverageFile( launchStartTime, 10000 );
-                coverage = CoverageResult.of( execFile,
-                    coverageService.formatCoverageInfo( execFile, projectName ) );
+                launchManagerForListener.removeLaunchListener( restartLaunchListener );
             }
-
-            List<Diagnostic> diagnostics = coverage != null && !coverage.available()
-                ? List.of( Diagnostic.fatal( DiagnosticCode.COVERAGE_UNAVAILABLE,
-                    "Coverage was requested but no coverage tooling (EclEmma/JaCoCo) is installed." ) )
-                : List.of();
-
-            TestSummary counts = testRunResults[0].summary();
-            return testRunResults[0].snapshot( TestRunResponse.terminalStatus( counts ), projectName,
-                requestedClasses, coverage, diagnostics, elapsed( runStartMillis ) );
         }
         catch ( InterruptedException e )
         {
@@ -890,10 +1039,39 @@ public class PDEService
     static void applyTestTargeting( ILaunchConfigurationWorkingCopy workingCopy, IJavaProject javaProject,
                                     IPackageFragment packageFragment, List<IType> testClasses )
     {
+        applyTestTargeting( workingCopy, javaProject, packageFragment, testClasses, null );
+    }
+
+    /**
+     * Writes the attributes that say <em>what to run</em> onto a launch configuration.
+     * When {@code methodName} is non-null the launch is scoped to a single method on a
+     * single class, using {@link SelectedJUnitPluginLaunchDelegate} so that
+     * {@code evaluateTests} returns an {@code IMethod} for true single-method isolation.
+     */
+    static void applyTestTargeting( ILaunchConfigurationWorkingCopy workingCopy, IJavaProject javaProject,
+                                    IPackageFragment packageFragment, List<IType> testClasses,
+                                    String methodName )
+    {
         workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_PROJECT_NAME,
             javaProject.getElementName() );
 
-        if ( testClasses.size() > 1 )
+        boolean singleMethodLaunch = methodName != null && !methodName.isBlank()
+            && testClasses.size() == 1;
+
+        if ( singleMethodLaunch )
+        {
+            // Use SelectedJUnitPluginLaunchDelegate so evaluateTests returns IMethod,
+            // giving JDT's runner true single-method isolation.
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_CLASSES,
+                List.of( testClasses.get( 0 ).getFullyQualifiedName() ) );
+            workingCopy.setAttribute( SelectedJUnitPluginLaunchDelegate.ATTR_TEST_METHOD, methodName );
+            // ATTR_MAIN_TYPE_NAME must name an existing type for JDT's pre-flight
+            // type resolution (see multi-class comment below for why it cannot be blank).
+            workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_MAIN_TYPE_NAME,
+                testClasses.get( 0 ).getFullyQualifiedName() );
+            workingCopy.setAttribute( JDT_JUNIT_CONTAINER, "" );
+        }
+        else if ( testClasses.size() > 1 )
         {
             List<String> classNames = testClasses.stream()
                 .map( IType::getFullyQualifiedName )
@@ -996,7 +1174,36 @@ public class PDEService
         }
     }
 
-    private void waitForLaunchTermination( org.eclipse.debug.core.ILaunch launch )
+    private int getRawExitCode( ILaunch iLaunch )
+    {
+        return java.util.Arrays.stream( iLaunch.getProcesses() )
+            .mapToInt( process -> {
+                try { return process.getExitValue(); }
+                catch ( org.eclipse.debug.core.DebugException e ) { return -1; }
+            } )
+            .findFirst()
+            .orElse( -1 );
+    }
+
+    private String getExitCode( ILaunch iLaunch )
+    {
+        return java.util.Arrays.stream( iLaunch.getProcesses() )
+            .map( process -> {
+                try
+                {
+                    return String.valueOf( process.getExitValue() ) + " (" + process.getLabel() + ")";
+                }
+                catch ( org.eclipse.debug.core.DebugException e )
+                {
+                    logger.log( org.eclipse.core.runtime.Status.error(
+                        "Error requesting exit code from process '" + process.getLabel() + "'", e ) );
+                    return "Exception requesting exit code from process '" + process.getLabel() + "': " + e.getMessage();
+                }
+            } )
+            .collect( java.util.stream.Collectors.joining( "\n" ) );
+    }
+
+    private void waitForLaunchTermination( ILaunch launch )
         throws InterruptedException
     {
         if ( launch == null || launch.isTerminated() )
@@ -1004,10 +1211,24 @@ public class PDEService
             return;
         }
 
-        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 10 );
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 30 );
+        long forceTerminateAt = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 20 );
         Display display = Display.getCurrent();
         while ( !launch.isTerminated() && System.currentTimeMillis() < deadline )
         {
+            if ( System.currentTimeMillis() > forceTerminateAt )
+            {
+                forceTerminateAt = Long.MAX_VALUE;
+                try
+                {
+                    launch.terminate();
+                }
+                catch ( org.eclipse.debug.core.DebugException e )
+                {
+                    logger.log( org.eclipse.core.runtime.Status.error(
+                        "Error requesting terminate on a launch that didn't terminate nicely in a while", e ) );
+                }
+            }
             if ( display != null && !display.isDisposed() )
             {
                 while ( display.readAndDispatch() )

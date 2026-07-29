@@ -136,6 +136,13 @@ public enum DiagnosticCode
 
     // --- everything else ---
 
+    // --- validation ---
+
+    /** The caller supplied arguments that cannot be combined (e.g. methodName with multiple classNames). */
+    VALIDATION_ERROR,
+
+    // --- everything else ---
+
     /** Anything unclassified. The message carries what is known. */
     INTERNAL_ERROR
 }

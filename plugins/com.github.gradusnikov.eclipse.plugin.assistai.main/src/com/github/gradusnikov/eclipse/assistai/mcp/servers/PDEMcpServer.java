@@ -7,12 +7,12 @@ import java.util.Optional;
 
 import org.eclipse.e4.core.di.annotations.Creatable;
 
-import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
-import com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.McpServer;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.Tool;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.ToolParam;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.PDEService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.RuntimeReloadService;
@@ -107,6 +107,10 @@ public class PDEMcpServer
                            + "If omitted, runs all tests or the packageName scope.",
                        required = false)
             String className,
+            @ToolParam(name = "methodName",
+                       description = "The test method name (e.g. 'testCreate'). Requires a single className.",
+                       required = false)
+            String methodName,
             @ToolParam(name = "packageName",
                        description = "The fully qualified package name (e.g. 'com.example.service'). "
                            + "Ignored if className is set.",
@@ -144,7 +148,21 @@ public class PDEMcpServer
         List<String> extras = parseCommaSeparated(additionalBundles);
 
         TestRunResponse response;
-        if ( className != null && !className.isBlank() )
+        if ( className != null && !className.isBlank()
+             && methodName != null && !methodName.isBlank() )
+        {
+            List<String> classes = parseCommaSeparated( className );
+            if ( classes.size() != 1 )
+            {
+                return TestRunResponse.notStarted( projectName, List.of(),
+                    Diagnostic.fatal( DiagnosticCode.VALIDATION_ERROR,
+                        "methodName requires exactly one className." ), 0 );
+            }
+            return pdeService.runJUnitPluginTestMethod(
+                projectName, classes.get( 0 ), methodName,
+                timeoutSeconds, coverage, allPlugins, extras, launcherName );
+        }
+        else if ( className != null && !className.isBlank() )
         {
             List<String> classes = parseCommaSeparated( className );
             if ( classes.isEmpty() )

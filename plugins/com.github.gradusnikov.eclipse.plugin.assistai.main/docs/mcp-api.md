@@ -998,6 +998,7 @@ Starts a JUnit Plug-in Test run asynchronously using the PDE launcher and return
 |---|---|---|
 | `projectName` | \* | The exact Eclipse project name containing the plug-in test classes |
 | `className` |  | Fully qualified class name (e.g. 'com.example.MyPluginTest'), or comma-separated names for running multiple classes in one PDE launch. If omitted, runs all tests or the packageName scope. |
+| `methodName` |  | The test method name (e.g. 'testCreate'). Requires a single className. |
 | `packageName` |  | The fully qualified package name (e.g. 'com.example.service'). Ignored if className is set. |
 | `timeout` |  | Maximum time in seconds to wait for test completion (default: 60) |
 | `withCoverage` |  | If 'true', runs tests with code coverage (requires EclEmma/JaCoCo installed). Default: false |
@@ -2530,7 +2531,7 @@ Reads the content of the given web page and returns it as markdown, together wit
 
 ### `DiagnosticCode`
 
-`RESOURCE_NOT_FOUND` \| `RESOURCE_NOT_ACCESSIBLE` \| `RESOURCE_ALREADY_EXISTS` \| `READ_ONLY_RESOURCE` \| `INVALID_RANGE` \| `VERSION_CONFLICT` \| `RESOURCE_VERSION_EXPIRED` \| `RESOURCE_OUT_OF_SYNC` \| `HISTORY_UNAVAILABLE` \| `TEXT_NOT_FOUND` \| `AMBIGUOUS_MATCH` \| `OVERLAPPING_EDITS` \| `INVALID_JAVA_EDIT` \| `REFACTORING_PRECONDITION_FAILED` \| `EDITOR_REVEAL_FAILED` \| `FORMATTER_FAILED` \| `PATCH_APPLY_FAILED` \| `MERGE_CONFLICT` \| `CHECKOUT_CONFLICT` \| `BRANCH_NOT_MERGED` \| `PROJECT_NOT_FOUND` \| `TEST_CLASS_NOT_FOUND` \| `TEST_PACKAGE_NOT_FOUND` \| `PDE_LAUNCH_TYPE_MISSING` \| `LAUNCH_CONFIGURATION_NOT_FOUND` \| `WORKSPACE_LOCKED` \| `OPERATION_TIMED_OUT` \| `DEPENDENCY_RESOLUTION_FAILED` \| `TEST_RESULTS_NOT_REPORTED` \| `COVERAGE_UNAVAILABLE` \| `INTERNAL_ERROR`
+`RESOURCE_NOT_FOUND` \| `RESOURCE_NOT_ACCESSIBLE` \| `RESOURCE_ALREADY_EXISTS` \| `READ_ONLY_RESOURCE` \| `INVALID_RANGE` \| `VERSION_CONFLICT` \| `RESOURCE_VERSION_EXPIRED` \| `RESOURCE_OUT_OF_SYNC` \| `HISTORY_UNAVAILABLE` \| `TEXT_NOT_FOUND` \| `AMBIGUOUS_MATCH` \| `OVERLAPPING_EDITS` \| `INVALID_JAVA_EDIT` \| `REFACTORING_PRECONDITION_FAILED` \| `EDITOR_REVEAL_FAILED` \| `FORMATTER_FAILED` \| `PATCH_APPLY_FAILED` \| `MERGE_CONFLICT` \| `CHECKOUT_CONFLICT` \| `BRANCH_NOT_MERGED` \| `PROJECT_NOT_FOUND` \| `TEST_CLASS_NOT_FOUND` \| `TEST_PACKAGE_NOT_FOUND` \| `PDE_LAUNCH_TYPE_MISSING` \| `LAUNCH_CONFIGURATION_NOT_FOUND` \| `WORKSPACE_LOCKED` \| `OPERATION_TIMED_OUT` \| `DEPENDENCY_RESOLUTION_FAILED` \| `TEST_RESULTS_NOT_REPORTED` \| `COVERAGE_UNAVAILABLE` \| `VALIDATION_ERROR` \| `INTERNAL_ERROR`
 
 ### `ResourceDescriptorResourceType`
 

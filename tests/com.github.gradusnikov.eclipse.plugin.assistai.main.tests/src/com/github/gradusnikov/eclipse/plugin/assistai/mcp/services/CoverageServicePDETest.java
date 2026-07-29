@@ -52,7 +52,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.UnitTestService;
 
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
 @TestMethodOrder( MethodOrderer.OrderAnnotation.class )
-public class CoverageServicePDETest
+public class CoverageServicePDETest extends AbstractOperationPDETest
 {
     private static final String TEST_PROJECT_NAME = "CoverageTestProject_Temp";
 
@@ -95,6 +95,7 @@ public class CoverageServicePDETest
 
         coverageService = ContextInjectionFactory.make( CoverageService.class, context );
         unitTestService = ContextInjectionFactory.make( UnitTestService.class, context );
+        initOperationRegistry( context );
 
         createTestProject();
     }
@@ -319,16 +320,16 @@ public class CoverageServicePDETest
     @Disabled
     public void testRunClassTests_withoutCoverage_passes()
     {
-        TestRunResponse result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, false );
-        System.out.println( "runClassTests without coverage: " + result );
-
-        assumeTrue( result.status() != RunStatus.FAILED_TO_START,
-            "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
-
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-        assertFalse( result.hasFailures(), result.summaryText() );
-        assertNull( result.coverage(),
-            "There should be no coverage section at all when withCoverage=false" );
+        runWithOperationAndPrintConsoleOnProblems( "testRunClassTests_withoutCoverage_passes", () -> {
+            TestRunResponse result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, false );
+            System.out.println( "runClassTests without coverage: " + result );
+            assumeTrue( result.status() != RunStatus.FAILED_TO_START,
+                "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertFalse( result.hasFailures(), result.summaryText() );
+            assertNull( result.coverage(),
+                "There should be no coverage section at all when withCoverage=false" );
+        } );
     }
 
     // -------------------------------------------------------------------------
@@ -342,23 +343,22 @@ public class CoverageServicePDETest
         assumeTrue( coverageService.isCoverageAvailable(),
             "Skipping: EclEmma/JaCoCo not installed" );
 
-        TestRunResponse result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, true );
-        System.out.println( "runClassTests with coverage: " + result );
-
-        assumeTrue( result.status() != RunStatus.FAILED_TO_START,
-            "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
-
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-
-        assertNotNull( result.coverage(), "coverage was requested, so it must be reported either way" );
-        assertTrue( result.coverage().requested() );
-        if ( result.coverage().execFilePath() == null )
-        {
-            Thread.sleep( 3000 );
-            String execFile = coverageService.findLatestCoverageFile();
-            assertNotNull( execFile,
-                "Expected coverage .exec file to be written after test run, but none found." );
-        }
+        runWithOperationAndPrintConsoleOnProblems( "testRunClassTests_withCoverage_includesCoverageInfo", () -> {
+            TestRunResponse result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, true );
+            System.out.println( "runClassTests with coverage: " + result );
+            assumeTrue( result.status() != RunStatus.FAILED_TO_START,
+                "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertNotNull( result.coverage(), "coverage was requested, so it must be reported either way" );
+            assertTrue( result.coverage().requested() );
+            if ( result.coverage().execFilePath() == null )
+            {
+                Thread.sleep( 3000 );
+                String execFile = coverageService.findLatestCoverageFile();
+                assertNotNull( execFile,
+                    "Expected coverage .exec file to be written after test run, but none found." );
+            }
+        } );
     }
 
     @Test
@@ -368,22 +368,21 @@ public class CoverageServicePDETest
         assumeTrue( coverageService.isCoverageAvailable(),
             "Skipping: EclEmma/JaCoCo not installed" );
 
-        TestRunResponse result = unitTestService.runAllTests( TEST_PROJECT_NAME, 60, true );
-        System.out.println( "runAllTests with coverage: " + result );
-
-        assumeTrue( result.status() != RunStatus.FAILED_TO_START,
-            "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
-
-        assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
-
-        assertNotNull( result.coverage(), "coverage was requested, so it must be reported either way" );
-        if ( result.coverage().execFilePath() == null )
-        {
-            Thread.sleep( 3000 );
-            String execFile = coverageService.findLatestCoverageFile();
-            assertNotNull( execFile,
-                "Expected coverage .exec file to be written after test run, but none found." );
-        }
+        runWithOperationAndPrintConsoleOnProblems( "testRunAllTests_withCoverage_includesCoverageInfo", () -> {
+            TestRunResponse result = unitTestService.runAllTests( TEST_PROJECT_NAME, 60, true );
+            System.out.println( "runAllTests with coverage: " + result );
+            assumeTrue( result.status() != RunStatus.FAILED_TO_START,
+                "Skipping: test runtime does not support nested JUnit launches (" + result.summaryText() + ")" );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertNotNull( result.coverage(), "coverage was requested, so it must be reported either way" );
+            if ( result.coverage().execFilePath() == null )
+            {
+                Thread.sleep( 3000 );
+                String execFile = coverageService.findLatestCoverageFile();
+                assertNotNull( execFile,
+                    "Expected coverage .exec file to be written after test run, but none found." );
+            }
+        } );
     }
 
     @Test
@@ -431,4 +430,5 @@ public class CoverageServicePDETest
         assertTrue( execFile.endsWith( ".exec" ) );
         assertTrue( new File( execFile ).exists() );
     }
+
 }

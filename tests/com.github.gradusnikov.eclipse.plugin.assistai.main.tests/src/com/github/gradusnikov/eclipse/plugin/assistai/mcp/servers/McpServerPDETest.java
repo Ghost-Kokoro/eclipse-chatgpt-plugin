@@ -189,6 +189,8 @@ public class McpServerPDETest
 
     // -----------------------------------------------------------------------
     // runJUnitPluginTests — unified entry point
+    // params: projectName, className, methodName, packageName, timeout,
+    //         withCoverage, includeAllPlugins, additionalBundles, launcherName
     // -----------------------------------------------------------------------
 
     @Test
@@ -198,7 +200,7 @@ public class McpServerPDETest
         {
             // no className/packageName → runs all tests in project
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, null, null, null, null, null ) );
+                "NonExistentProject_XYZ", null, null, null, null, null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -212,7 +214,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, "30", null, null, null, null ) );
+                "NonExistentProject_XYZ", null, null, null, "30", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -226,7 +228,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, "10", null, "true", null, null ) );
+                "NonExistentProject_XYZ", null, null, null, "10", null, "true", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -240,7 +242,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, "10", null, "false", null, null ) );
+                "NonExistentProject_XYZ", null, null, null, "10", null, "false", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -254,7 +256,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, "10", null, "false",
+                "NonExistentProject_XYZ", null, null, null, "10", null, "false",
                 "org.eclipse.core.runtime,org.eclipse.ui", null ) );
         }
         catch ( IllegalStateException e )
@@ -269,7 +271,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", "com.example.MyTest", null, null, null, null, null, null ) );
+                "NonExistentProject_XYZ", "com.example.MyTest", null, null, null, null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -283,7 +285,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", "com.example.MyTest", null, "10", null, "true", null, null ) );
+                "NonExistentProject_XYZ", "com.example.MyTest", null, null, "10", null, "true", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -297,7 +299,7 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", "com.example.MyTest", null, "10", null, "false",
+                "NonExistentProject_XYZ", "com.example.MyTest", null, null, "10", null, "false",
                 "org.eclipse.core.runtime, org.eclipse.ui", null ) );
         }
         catch ( IllegalStateException e )
@@ -312,7 +314,7 @@ public class McpServerPDETest
         // comma-only className → parseCommaSeparated returns empty list → rejected by PDEService
         assertThrows( IllegalArgumentException.class,
             () -> server.runJUnitPluginTests(
-                "SomeProject", " , ", null, null, null, null, null, null ) );
+                "SomeProject", " , ", null, null, null, null, null, null, null ) );
     }
 
     @Test
@@ -321,7 +323,7 @@ public class McpServerPDETest
         assertProjectNotFound( server.runJUnitPluginTests(
             "NonExistentProject_XYZ",
             " com.example.FirstPDETest, com.example.SecondPDETest ",
-            null, "10", null, "false", "org.eclipse.ui, org.eclipse.core.runtime", null ) );
+            null, null, "10", null, "false", "org.eclipse.ui, org.eclipse.core.runtime", null ) );
     }
 
     @Test
@@ -330,7 +332,61 @@ public class McpServerPDETest
         try
         {
             assertProjectNotFound( server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, "com.example.tests", "10", null, null, null, null ) );
+                "NonExistentProject_XYZ", null, null, "com.example.tests", "10", null, null, null, null ) );
+        }
+        catch ( IllegalStateException e )
+        {
+            assumeTrue( false, "Skipping: workspace not available (" + e.getMessage() + ")" );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // methodName routing
+    // -----------------------------------------------------------------------
+
+    @Test
+    public void testStartJUnitPluginTestRun_singleMethod_routesToRunJUnitPluginTestMethod()
+    {
+        // className + methodName → delegates to pdeService.runJUnitPluginTestMethod
+        // Non-existent project produces a PROJECT_NOT_FOUND diagnostic.
+        try
+        {
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", "com.example.MyTest", "testSomething",
+                null, "10", null, null, null, null ) );
+        }
+        catch ( IllegalStateException e )
+        {
+            assumeTrue( false, "Skipping: workspace not available (" + e.getMessage() + ")" );
+        }
+    }
+
+    @Test
+    public void testStartJUnitPluginTestRun_methodName_withMultipleClasses_isRejected()
+    {
+        // methodName combined with comma-separated classNames must return a VALIDATION_ERROR,
+        // not throw, since the check happens inside the routing block.
+        TestRunResponse response = server.runJUnitPluginTests(
+            "NonExistentProject_XYZ",
+            "com.example.FirstTest, com.example.SecondTest",
+            "testSomething",
+            null, "10", null, null, null, null );
+        assertNotNull( response );
+        assertEquals( RunStatus.FAILED_TO_START, response.status(), response.summaryText() );
+        assertEquals( List.of( DiagnosticCode.VALIDATION_ERROR ),
+            response.diagnostics().stream().map( Diagnostic::code ).toList() );
+    }
+
+    @Test
+    public void testStartJUnitPluginTestRun_methodName_withoutClassName_isIgnored()
+    {
+        // methodName without className falls through to the package/all-tests branch.
+        // The package name wins and produces an error about the non-existent project.
+        try
+        {
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, "testSomething", "com.example.tests",
+                "10", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
