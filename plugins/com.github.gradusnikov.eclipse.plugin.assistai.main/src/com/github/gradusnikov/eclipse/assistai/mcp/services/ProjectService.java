@@ -1,29 +1,21 @@
 
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.File;
-import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.eclipse.core.resources.IContainer;
-import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.Path;
 import org.eclipse.e4.core.di.annotations.Creatable;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaProject;
@@ -31,7 +23,12 @@ import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.core.resources.IProjectDescription;
 
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.OpenProjectResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectLayoutResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectPropertiesResponse;
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
 
 import jakarta.inject.Inject;
@@ -50,791 +47,413 @@ public class ProjectService {
     AiIgnoreService aiIgnoreService;
     
     /**
-     * Lists all available projects in the workspace with their detected natures.
-     * 
-     * @return A formatted string containing project information
+     * Lists every project in the workspace.
+     * <p>
+     * Natures are reported as ids rather than as friendly labels: an id is what
+     * identifies a project as Java or Maven, and it survives rewording.
+     *
+     * @return the projects, each with the name the other tools address it by
      */
-    public String listProjects() {
-        StringBuilder result = new StringBuilder();
-        result.append("# Available Projects in Workspace\n\n");
-        
-        try {
-            // Get all projects in the workspace
-            IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
-            
-            if (projects.length == 0) 
-            {
-                return "No projects found in the workspace.";
-            }
-            
-            // Define common nature IDs
-            final String JAVA_NATURE = JavaCore.NATURE_ID; // "org.eclipse.jdt.core.javanature"
-            final String CPP_NATURE = "org.eclipse.cdt.core.cnature";
-            final String CPP_CC_NATURE = "org.eclipse.cdt.core.ccnature";
-            final String PYTHON_NATURE = "org.python.pydev.pythonNature";
-            final String JS_NATURE = "org.eclipse.wst.jsdt.core.jsNature";
-            final String PHP_NATURE = "org.eclipse.php.core.PHPNature";
-            final String WEB_NATURE = "org.eclipse.wst.common.project.facet.core.nature";
-            final String MAVEN_NATURE = "org.eclipse.m2e.core.maven2Nature";
-            final String GRADLE_NATURE = "org.eclipse.buildship.core.gradleprojectnature";
-            
-            // List all projects with their status and natures
-            for (IProject project : projects) {
-                result.append("- **").append(project.getName()).append("**");
-                
-                // Add project status (open/closed)
-                result.append(" (").append(project.isOpen() ? "Open" : "Closed").append(")");
-                
-                // Only attempt to determine natures if the project is open
-                if (project.isOpen()) {
-                    try {
-                        List<String> detectedNatures = new ArrayList<>();
-                        
-                        // Check for Java nature
-                        if (project.hasNature(JAVA_NATURE)) {
-                            IJavaProject javaProject = JavaCore.create(project);
-                            String javaVersion = javaProject.getOption(JavaCore.COMPILER_COMPLIANCE, true);
-                            detectedNatures.add("Java " + javaVersion);
-                        }
-                        
-                        // Check for C/C++ nature
-                        if (project.hasNature(CPP_NATURE)) {
-                            detectedNatures.add("C");
-                        }
-                        if (project.hasNature(CPP_CC_NATURE)) {
-                            detectedNatures.add("C++");
-                        }
-                        
-                        // Check for Python nature
-                        if (project.hasNature(PYTHON_NATURE)) {
-                            detectedNatures.add("Python");
-                        }
-                        
-                        // Check for JavaScript nature
-                        if (project.hasNature(JS_NATURE)) {
-                            detectedNatures.add("JavaScript");
-                        }
-                        
-                        // Check for PHP nature
-                        if (project.hasNature(PHP_NATURE)) {
-                            detectedNatures.add("PHP");
-                        }
-                        
-                        // Check for Web nature
-                        if (project.hasNature(WEB_NATURE)) {
-                            detectedNatures.add("Web");
-                        }
-                        
-                        // Check for build system natures
-                        if (project.hasNature(MAVEN_NATURE)) {
-                            detectedNatures.add("Maven");
-                        }
-                        if (project.hasNature(GRADLE_NATURE)) {
-                            detectedNatures.add("Gradle");
-                        }
-                        
-                        // If we detected natures, add them to the output
-                        if (!detectedNatures.isEmpty()) {
-                            result.append(" - Project Type: ").append(String.join(", ", detectedNatures));
-                        } else {
-                            // Get all natures for projects we couldn't categorize
-                            String[] natures = project.getDescription().getNatureIds();
-                            if (natures.length > 0) {
-                                result.append(" - Other Nature IDs: ").append(String.join(", ", natures));
-                            } else {
-                                result.append(" - Generic Project (no specific natures)");
-                            }
-                        }
-                    } catch (CoreException e) {
-                        result.append(" - Error determining project nature");
-                        logger.error(e.getMessage(), e);
-                    }
-                }
-                
-                result.append("\n");
-            }
-        } catch (Exception e) {
-            logger.error(e.getMessage(), e);
-            return "Error retrieving projects: " + e.getMessage();
+    public ProjectListResponse listProjects()
+    {
+        List<ProjectListResponse.WorkspaceProject> projects = new ArrayList<>();
+
+        for ( IProject project : ResourcesPlugin.getWorkspace().getRoot().getProjects() )
+        {
+            IPath location = project.getLocation();
+            projects.add( new ProjectListResponse.WorkspaceProject(
+                    project.getName(),
+                    project.isOpen(),
+                    naturesOf( project ),
+                    location == null ? null : location.toOSString() ) );
         }
-        
-        return result.toString();
+
+        return ProjectListResponse.of( projects );
     }
 
-    public String openProject(String directoryPath) {
-        try {
-            File directory = new File(directoryPath);
-            if (!directory.exists()) {
-                return "Error: Directory does not exist: " + directoryPath;
-            }
-            if (!directory.isDirectory()) {
-                return "Error: Path is not a directory: " + directoryPath;
-            }
+    /**
+     * The nature ids of an open project. A closed project has no readable description,
+     * so it reports none rather than an error - being closed is already in the response.
+     */
+    private List<String> naturesOf( IProject project )
+    {
+        if ( !project.isOpen() )
+        {
+            return List.of();
+        }
+        try
+        {
+            return List.of( project.getDescription().getNatureIds() );
+        }
+        catch ( CoreException e )
+        {
+            logger.error( e.getMessage(), e );
+            return List.of();
+        }
+    }
 
+
+    /**
+     * Opens a directory as a workspace project, importing it if the workspace does not
+     * already know it.
+     * <p>
+     * The returned {@code projectName} is the name Eclipse assigned - from the
+     * directory's {@code .project} file, or from the directory name when there is
+     * none - and it is what every tool called next takes as its {@code projectName}
+     * argument. It is not necessarily the last segment of {@code directoryPath}.
+     *
+     * @param directoryPath an absolute filesystem path to the directory
+     * @return which of the three ways this succeeded, or a failure carrying the reason
+     *         as a code
+     */
+    public OpenProjectResponse openProject( String directoryPath )
+    {
+        File directory = new File( directoryPath );
+        if ( !directory.exists() )
+        {
+            return OpenProjectResponse.failed( directoryPath, Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_FOUND,
+                    "Directory does not exist: " + directoryPath ) );
+        }
+        if ( !directory.isDirectory() )
+        {
+            return OpenProjectResponse.failed( directoryPath,
+                    Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                            "Path is not a directory: " + directoryPath ) );
+        }
+
+        try
+        {
             IProgressMonitor monitor = new NullProgressMonitor();
-            File projectFile = new File(directory, ".project");
+            File projectFile = new File( directory, ".project" );
 
             IProjectDescription description;
-            if (projectFile.exists()) {
-                org.eclipse.core.runtime.IPath projectFilePath = org.eclipse.core.runtime.Path.fromOSString(projectFile.getAbsolutePath());
-                description = ResourcesPlugin.getWorkspace().loadProjectDescription(projectFilePath);
-            } else {
-                String projectName = directory.getName();
-                description = ResourcesPlugin.getWorkspace().newProjectDescription(projectName);
-                org.eclipse.core.runtime.IPath locationPath = org.eclipse.core.runtime.Path.fromOSString(directory.getAbsolutePath());
-                description.setLocation(locationPath);
-            }
-
-            String projectName = description.getName();
-            IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-
-            if (project.exists()) {
-                if (!project.isOpen()) {
-                    project.open(monitor);
-                    return "Project '" + projectName + "' was already in workspace but closed. Opened successfully.";
-                }
-                return "Project '" + projectName + "' is already open in the workspace.";
-            }
-
-            project.create(description, monitor);
-            project.open(monitor);
-
-            return "Project '" + projectName + "' imported and opened successfully from: " + directoryPath;
-        } catch (CoreException e) {
-            logger.error(e.getMessage(), e);
-            return "Error opening project: " + e.getMessage();
-        }
-    }
-
-    
-    /**
-     * Gets the file and folder structure of a specified project.
-     * 
-     * @param projectName The name of the project to analyze
-     * @return A hierarchical representation of the project structure
-     */
-    public String getProjectLayout(String projectName) 
-    {
-        return getProjectLayout(projectName, null, -1);
-    }
-
-    /**
-     * Gets the file and folder structure of a specified project, optionally scoped to a subdirectory.
-     * 
-     * @param projectName The name of the project to analyze
-     * @param scopePath Optional path relative to the project root to limit the listing (e.g., "src/main/java")
-     * @param maxDepth Maximum depth of the directory tree to display (-1 for unlimited)
-     * @return A hierarchical representation of the project structure
-     */
-    public String getProjectLayout(String projectName, String scopePath, int maxDepth) 
-    {
-        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-        if (project == null || !project.exists()) 
-        {
-            return "Project '" + projectName + "' not found.";
-        }
-        
-        StringBuilder result = new StringBuilder();
-        try 
-        {
-            IResource startResource = project;
-            if (scopePath != null && !scopePath.isBlank())
+            if ( projectFile.exists() )
             {
-                IResource scoped = project.findMember(scopePath);
-                if (scoped == null || !scoped.exists())
-                {
-                    return "Error: Path '" + scopePath + "' not found in project '" + projectName + "'.";
-                }
-                startResource = scoped;
-                result.append("# Project Structure: ").append(projectName).append("/").append(scopePath).append("\n\n");
+                description = ResourcesPlugin.getWorkspace()
+                        .loadProjectDescription( Path.fromOSString( projectFile.getAbsolutePath() ) );
             }
             else
             {
-                result.append("# Project Structure: ").append(projectName).append("\n\n");
+                description = ResourcesPlugin.getWorkspace().newProjectDescription( directory.getName() );
+                description.setLocation( Path.fromOSString( directory.getAbsolutePath() ) );
             }
 
-            int effectiveMaxDepth = maxDepth > 0 ? maxDepth : Integer.MAX_VALUE;
-            collectResourcesForLLM(startResource, 0, effectiveMaxDepth, result);
-        } 
-        catch (CoreException e)
-        {
-            logger.error(e.getMessage(), e);
-            return "Error retrieving project layout: " + e.getMessage();
+            String projectName = description.getName();
+            IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+
+            if ( project.exists() )
+            {
+                if ( project.isOpen() )
+                {
+                    return OpenProjectResponse.of( OpenProjectResponse.Status.ALREADY_OPEN, projectName,
+                            directoryPath, locationOf( project ) );
+                }
+                project.open( monitor );
+                return OpenProjectResponse.of( OpenProjectResponse.Status.OPENED, projectName, directoryPath,
+                        locationOf( project ) );
+            }
+
+            project.create( description, monitor );
+            project.open( monitor );
+
+            return OpenProjectResponse.of( OpenProjectResponse.Status.IMPORTED, projectName, directoryPath,
+                    locationOf( project ) );
         }
-        
-        return result.toString();
+        catch ( CoreException e )
+        {
+            logger.error( e.getMessage(), e );
+            return OpenProjectResponse.failed( directoryPath, Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                    "Error opening project: " + e.getMessage() ) );
+        }
     }
-    
-    /**
-     * Retrieves the properties and configuration of a specified project.
-     * 
-     * @param projectName The name of the project to analyze
-     * @return A formatted string containing project properties
-     */
-    public String getProjectProperties(String projectName) 
+
+    /** Where a project's content is on disk, or null for one with no local content. */
+    private static String locationOf( IProject project )
     {
-        try 
-        {
-            // Get the project
-            IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-            if (project == null || !project.exists()) {
-                return "Error: Project '" + projectName + "' not found.";
-            }
-            
-            if (!project.isOpen()) {
-                return "Error: Project '" + projectName + "' is closed.";
-            }
-            
-            StringBuilder result = new StringBuilder();
-            result.append("# Project Properties: ").append(projectName).append("\n\n");
-            
-            // Check project natures
-            String[] natures = project.getDescription().getNatureIds();
-            result.append("## Project Natures\n");
-            for (String nature : natures) {
-                result.append("- ").append(nature).append("\n");
-            }
-            result.append("\n");
-            
-            // Handle Java projects
-            if (project.hasNature(JavaCore.NATURE_ID)) {
-                appendJavaProjectProperties(JavaCore.create(project), result);
-            }
-            
-            // Handle C/C++ projects
-            if (project.hasNature("org.eclipse.cdt.core.cnature") || 
-                project.hasNature("org.eclipse.cdt.core.ccnature")) {
-                appendCProjectProperties(project, result);
-            }
-            
-            // Handle Python projects
-            if (project.hasNature("org.python.pydev.pythonNature")) {
-                appendPythonProjectProperties(project, result);
-            }
-            
-            // If the project doesn't match any of the specific natures, show generic properties
-            if (!project.hasNature(JavaCore.NATURE_ID) && 
-                !project.hasNature("org.eclipse.cdt.core.cnature") && 
-                !project.hasNature("org.eclipse.cdt.core.ccnature") && 
-                !project.hasNature("org.python.pydev.pythonNature")) {
-                appendGenericProjectProperties(project, result);
-            }
-            
-            return result.toString();
-            
-        } catch (CoreException e) {
-            logger.error(e.getMessage(), e);
-            return "Error retrieving project properties: " + e.getMessage();
-        }
+        IPath location = project.getLocation();
+        return location == null ? null : location.toOSString();
     }
+
     
-    private void collectResourcesForLLM(IResource resource, int depth, int maxDepth, StringBuilder result) throws CoreException {
-        if (aiIgnoreService.isExcluded(resource))
+    /**
+     * The file and folder tree of a project, or of one directory inside it.
+     * <p>
+     * The nesting is the record's nesting rather than leading spaces in a bullet list,
+     * and every node carries the project-relative path the reading and editing tools
+     * take - so the next call after this one needs no second lookup.
+     *
+     * @param scopePath a directory relative to the project root, or null for the whole
+     *            project. Reported as a field, not as truncation: the caller chose it
+     * @param maxDepth how many levels to walk, or null/&lt;=0 for all of them. A folder
+     *            the walk stops at still reports how many children it has, and the
+     *            response as a whole reports that it was cut short
+     */
+    public ProjectLayoutResponse getProjectLayout( String projectName, String scopePath, Integer maxDepth )
+    {
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+        if ( project == null || !project.exists() )
         {
-            return;
+            return ProjectLayoutResponse.failed( projectName, scopePath, Diagnostic.fatal(
+                    DiagnosticCode.PROJECT_NOT_FOUND, "Project '" + projectName + "' not found." ) );
+        }
+        if ( !project.isOpen() )
+        {
+            return ProjectLayoutResponse.failed( projectName, scopePath, Diagnostic.fatal(
+                    DiagnosticCode.RESOURCE_NOT_ACCESSIBLE, "Project '" + projectName + "' is closed." ) );
         }
 
-        // Use proper indentation with markdown list formatting
-        String indent = "";
-        for (int i = 0; i < depth; i++) 
+        IResource start = project;
+        if ( scopePath != null && !scopePath.isBlank() )
         {
-            indent += "  ";
+            start = project.findMember( scopePath );
+            if ( start == null || !start.exists() )
+            {
+                return ProjectLayoutResponse.failed( projectName, scopePath, Diagnostic.fatal(
+                        DiagnosticCode.RESOURCE_NOT_FOUND,
+                        "Path '" + scopePath + "' not found in project '" + projectName + "'." ) );
+            }
         }
-        
-        // Append the current resource with markdown list item
-        String prefix = depth > 0 ? indent + "- " : "- ";
-        result.append(prefix).append(resource.getName());
-        
-        // Add type indicator for better context
-        String type = switch ( resource.getType() ) {
-            case IResource.FOLDER -> "(Directory)";
-            case IResource.FILE -> "(File)";
-            case IResource.PROJECT -> "(Project)";
-            default -> "";
-        };
-        result.append( " ");
-        result.append( type );
-        result.append("\n");
-    
-        // If the resource is a container, list its children (respecting maxDepth)
-        if (resource instanceof IContainer && depth < maxDepth) 
+
+        int depthLimit = ( maxDepth == null || maxDepth <= 0 ) ? Integer.MAX_VALUE : maxDepth;
+        LayoutWalk walk = new LayoutWalk( depthLimit );
+
+        try
         {
-            IContainer container = (IContainer) resource;
+            ProjectLayoutResponse.Node root = walk.visit( start, 0 );
+            if ( root == null )
+            {
+                return ProjectLayoutResponse.failed( projectName, scopePath, Diagnostic.fatal(
+                        DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                        "'" + ( scopePath == null ? projectName : scopePath )
+                                + "' is excluded from AI processing by .aiignore." ) );
+            }
+            return new ProjectLayoutResponse( ProjectLayoutResponse.Status.OK, projectName, scopePath,
+                    depthLimit == Integer.MAX_VALUE ? null : depthLimit, root,
+                    walk.files, walk.folders, walk.excluded, walk.truncated, Diagnostic.none() );
+        }
+        catch ( CoreException e )
+        {
+            logger.error( e.getMessage(), e );
+            return ProjectLayoutResponse.failed( projectName, scopePath, Diagnostic.fatal(
+                    DiagnosticCode.INTERNAL_ERROR, "Error retrieving project layout: " + e.getMessage() ) );
+        }
+    }
+
+    /**
+     * One walk of the resource tree, carrying the totals it accumulates.
+     * <p>
+     * A class rather than a method with out-parameters because the counts have to
+     * survive the recursion, and a {@code StringBuilder} passed down - which is how
+     * this worked when the result was Markdown - has nowhere to put them.
+     */
+    private final class LayoutWalk
+    {
+        private final int maxDepth;
+
+        private int       files;
+
+        private int       folders;
+
+        private int       excluded;
+
+        private boolean   truncated;
+
+        LayoutWalk( int maxDepth )
+        {
+            this.maxDepth = maxDepth;
+        }
+
+        /** @return the node, or null when .aiignore excludes this resource */
+        ProjectLayoutResponse.Node visit( IResource resource, int depth ) throws CoreException
+        {
+            if ( aiIgnoreService.isExcluded( resource ) )
+            {
+                excluded++;
+                return null;
+            }
+
+            ProjectLayoutResponse.NodeType type = switch ( resource.getType() )
+            {
+                case IResource.PROJECT -> ProjectLayoutResponse.NodeType.PROJECT;
+                case IResource.FOLDER -> ProjectLayoutResponse.NodeType.FOLDER;
+                default -> ProjectLayoutResponse.NodeType.FILE;
+            };
+
+            if ( !( resource instanceof IContainer container ) )
+            {
+                files++;
+                return new ProjectLayoutResponse.Node( resource.getName(),
+                        resource.getProjectRelativePath().toString(), type, 0, List.of() );
+            }
+
+            if ( type == ProjectLayoutResponse.NodeType.FOLDER )
+            {
+                folders++;
+            }
             IResource[] members = container.members();
-            for (IResource member : members) 
+            List<ProjectLayoutResponse.Node> children = new ArrayList<>();
+
+            if ( depth < maxDepth )
             {
-                collectResourcesForLLM(member, depth + 1, maxDepth, result);
+                for ( IResource member : members )
+                {
+                    ProjectLayoutResponse.Node child = visit( member, depth + 1 );
+                    if ( child != null )
+                    {
+                        children.add( child );
+                    }
+                }
             }
+            else if ( members.length > 0 )
+            {
+                // The listing stops here, and childCount says how much is behind it.
+                truncated = true;
+            }
+
+            return new ProjectLayoutResponse.Node( resource.getName(),
+                    resource.getProjectRelativePath().toString(), type, members.length, children );
         }
-        else if (resource instanceof IContainer && depth >= maxDepth)
+    }
+    
+    /**
+     * How a project is configured.
+     * <p>
+     * A missing project and a closed one are separate statuses, not two wordings of
+     * {@code "Error: …"}: the first is fixed by correcting the name, the second by
+     * calling {@code openProject}.
+     * <p>
+     * Source folders and the output location are project-relative, because that is
+     * what the reading and editing tools take. They used to be reported as
+     * workspace-absolute paths inside a Markdown bullet list, which no tool accepts.
+     *
+     * @param projectName the name {@code listProjects} reports
+     * @return the configuration, or a failed result carrying the reason as a code
+     */
+    public ProjectPropertiesResponse getProjectProperties( String projectName )
+    {
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+        if ( project == null || !project.exists() )
         {
-            // Indicate there are more contents not shown
-            IContainer container = (IContainer) resource;
-            int childCount = container.members().length;
-            if (childCount > 0)
+            return ProjectPropertiesResponse.failed( projectName, ProjectPropertiesResponse.Status.PROJECT_NOT_FOUND,
+                    Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND,
+                            "Project '" + projectName + "' not found. Use listProjects to see the workspace." ) );
+        }
+        if ( !project.isOpen() )
+        {
+            return ProjectPropertiesResponse.failed( projectName, ProjectPropertiesResponse.Status.PROJECT_CLOSED,
+                    Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                            "Project '" + projectName + "' is closed. Call openProject on its directory first." ) );
+        }
+
+        try
+        {
+            ProjectPropertiesResponse.JavaProperties java = project.hasNature( JavaCore.NATURE_ID )
+                    ? javaPropertiesOf( JavaCore.create( project ) )
+                    : null;
+
+            return ProjectPropertiesResponse.of( projectName, locationOf( project ),
+                    List.of( project.getDescription().getNatureIds() ), buildFilesOf( project ), java );
+        }
+        catch ( CoreException e )
+        {
+            logger.error( e.getMessage(), e );
+            return ProjectPropertiesResponse.failed( projectName, ProjectPropertiesResponse.Status.FAILED,
+                    Diagnostic.fatal( DiagnosticCode.INTERNAL_ERROR,
+                            "Error retrieving project properties: " + e.getMessage() ) );
+        }
+    }
+
+    /**
+     * The build descriptors present in the project root.
+     * <p>
+     * This is all that survives of the per-nature sections this tool used to render:
+     * for a project that is not a Java project, which build system owns it is the only
+     * fact worth a field, and the file that says so is the fact. Everything else those
+     * sections produced - file counts, {@code .settings} contents, version-control
+     * markers - is answered better by {@code getProjectLayout} or the git tools.
+     */
+    private static List<String> buildFilesOf( IProject project )
+    {
+        List<String> found = new ArrayList<>();
+        for ( String candidate : BUILD_FILES )
+        {
+            if ( project.findMember( candidate ) != null )
             {
-                result.append(indent).append("    ").append("... (").append(childCount).append(" items)\n");
+                found.add( candidate );
             }
         }
+        return found;
+    }
+
+    private static final List<String> BUILD_FILES = List.of( "pom.xml", "build.gradle", "build.gradle.kts",
+            "settings.gradle", "build.xml", "package.json", "CMakeLists.txt", "Makefile", "setup.py",
+            "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod" );
+
+    /**
+     * The Java configuration of a project, with every path in the form a tool accepts.
+     * <p>
+     * Classpath entry paths are workspace-relative ({@code /Project/src}); source
+     * folders and the output location are reported with that first segment removed,
+     * project references as the bare project name, and libraries resolved to where
+     * they are on disk so that a workspace jar and an external one mean the same
+     * thing.
+     */
+    private ProjectPropertiesResponse.JavaProperties javaPropertiesOf( IJavaProject javaProject )
+            throws JavaModelException
+    {
+        List<String> sourceFolders = new ArrayList<>();
+        List<String> referencedProjects = new ArrayList<>();
+        List<String> referencedLibraries = new ArrayList<>();
+
+        for ( IClasspathEntry entry : javaProject.getRawClasspath() )
+        {
+            switch ( entry.getEntryKind() )
+            {
+                case IClasspathEntry.CPE_SOURCE -> sourceFolders.add( projectRelative( entry.getPath() ) );
+                case IClasspathEntry.CPE_PROJECT -> referencedProjects.add( entry.getPath().segment( 0 ) );
+                case IClasspathEntry.CPE_LIBRARY -> referencedLibraries.add( onDisk( entry.getPath() ) );
+                default ->
+                {
+                    // Containers and variables resolve to the two kinds above; a caller
+                    // asking "what is on the classpath" is served by the resolved form,
+                    // which getProjectDependencies and getEffectivePom already give.
+                }
+            }
+        }
+
+        return new ProjectPropertiesResponse.JavaProperties(
+                javaProject.getOption( JavaCore.COMPILER_COMPLIANCE, true ),
+                javaProject.getOption( JavaCore.COMPILER_SOURCE, true ),
+                javaProject.getOption( JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, true ),
+                projectRelative( javaProject.getOutputLocation() ),
+                sourceFolders, referencedProjects, referencedLibraries );
     }
 
     /**
-     * Appends Java project specific properties to the result.
-     * 
-     * @param javaProject The Java project to analyze
-     * @param result The StringBuilder to append results to
+     * A workspace-relative path with its project segment removed.
+     *
+     * @return the project-relative path, empty when the path is the project root itself
      */
-    private void appendJavaProjectProperties(IJavaProject javaProject, StringBuilder result) {
-        try {
-            result.append("## Java Project Properties\n\n");
-            
-            // Get Java version
-            String javaVersion = javaProject.getOption(JavaCore.COMPILER_COMPLIANCE, true);
-            result.append("### Java Version\n");
-            result.append("- Compiler Compliance Level: ").append(javaVersion).append("\n");
-            
-            // Get source compatibility
-            String sourceCompatibility = javaProject.getOption(JavaCore.COMPILER_SOURCE, true);
-            result.append("- Source Compatibility: ").append(sourceCompatibility).append("\n");
-            
-            // Get target compatibility
-            String targetCompatibility = javaProject.getOption(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, true);
-            result.append("- Target Compatibility: ").append(targetCompatibility).append("\n\n");
-            
-            // Get output location
-            IPath outputLocation = javaProject.getOutputLocation();
-            result.append("### Output Location\n");
-            result.append("- ").append(outputLocation.toString()).append("\n\n");
-            
-            // Get source folders
-            result.append("### Source Folders\n");
-            IClasspathEntry[] entries = javaProject.getRawClasspath();
-            for (IClasspathEntry entry : entries) {
-                if (entry.getEntryKind() == IClasspathEntry.CPE_SOURCE) {
-                    result.append("- ").append(entry.getPath().toString()).append("\n");
-                }
-            }
-            result.append("\n");
-            
-            // Get referenced libraries
-            result.append("### Referenced Libraries\n");
-            List<String> libraries = new ArrayList<>();
-            for (IClasspathEntry entry : entries) {
-                if (entry.getEntryKind() == IClasspathEntry.CPE_LIBRARY) {
-                    IPath path = entry.getPath();
-                    libraries.add(path.toOSString());
-                    result.append("- ").append(path.toOSString()).append("\n");
-                }
-            }
-            
-            if (libraries.isEmpty()) {
-                result.append("- No external libraries referenced\n");
-            }
-            result.append("\n");
-            
-            // Get project references
-            result.append("### Project References\n");
-            boolean hasProjectReferences = false;
-            for (IClasspathEntry entry : entries) {
-                if (entry.getEntryKind() == IClasspathEntry.CPE_PROJECT) {
-                    hasProjectReferences = true;
-                    result.append("- ").append(entry.getPath().toString()).append("\n");
-                }
-            }
-            
-            if (!hasProjectReferences) {
-                result.append("- No project references\n");
-            }
-            result.append("\n");
-            
-            // Get compiler options
-            result.append("### Compiler Options\n");
-            Map<String, String> options = javaProject.getOptions(true);
-            List<String> relevantOptions = Arrays.asList(
-                JavaCore.COMPILER_PB_UNUSED_LOCAL,
-                JavaCore.COMPILER_PB_UNUSED_PRIVATE_MEMBER,
-                JavaCore.COMPILER_PB_RAW_TYPE_REFERENCE,
-                JavaCore.COMPILER_PB_MISSING_OVERRIDE_ANNOTATION
-            );
-            
-            for (String option : relevantOptions) {
-                if (options.containsKey(option)) {
-                    result.append("- ").append(option).append(": ").append(options.get(option)).append("\n");
-                }
-            }
-            
-        } catch (JavaModelException e) {
-            logger.error(e.getMessage(), e);
-            result.append("Error retrieving Java project properties: ").append(e.getMessage()).append("\n");
+    private static String projectRelative( IPath workspacePath )
+    {
+        if ( workspacePath == null )
+        {
+            return null;
         }
-    }
-    
-    /**
-     * Appends C/C++ project specific properties to the result.
-     * 
-     * @param project The C/C++ project to analyze
-     * @param result The StringBuilder to append results to
-     */
-    private void appendCProjectProperties(IProject project, StringBuilder result) {
-        result.append("## C/C++ Project Properties\n\n");
-        
-        try {
-            // Check if it's a C or C++ project or both
-            boolean isC = project.hasNature("org.eclipse.cdt.core.cnature");
-            boolean isCpp = project.hasNature("org.eclipse.cdt.core.ccnature");
-            
-            result.append("### Project Type\n");
-            if (isC && isCpp) {
-                result.append("- C/C++ Project\n\n");
-            } else if (isC) {
-                result.append("- C Project\n\n");
-            } else if (isCpp) {
-                result.append("- C++ Project\n\n");
-            }
-            
-            // Get build configurations (requires CDT classes)
-            // This is a simplified version as we can't directly use CDT classes without adding dependencies
-            result.append("### Build Configuration\n");
-            IResource settingsResource = project.findMember(".settings/org.eclipse.cdt.core.prefs");
-            if (settingsResource instanceof IFile) {
-                IFile settingsFile = (IFile) settingsResource;
-                try (InputStream is = settingsFile.getContents()) {
-                    Properties props = new Properties();
-                    props.load(is);
-                    
-                    // Extract some common CDT properties
-                    List<String> configurationList = new ArrayList<>();
-                    for (Object key : props.keySet()) {
-                        String keyStr = (String) key;
-                        if (keyStr.contains("activeConfiguration")) {
-                            result.append("- Active Configuration: ").append(props.getProperty(keyStr)).append("\n");
-                        }
-                        if (keyStr.contains("configuration")) {
-                            String value = props.getProperty(keyStr);
-                            if (!configurationList.contains(value)) {
-                                configurationList.add(value);
-                            }
-                        }
-                    }
-                    
-                    if (!configurationList.isEmpty()) {
-                        result.append("- Available Configurations: ").append(String.join(", ", configurationList)).append("\n");
-                    }
-                } catch (IOException e) {
-                    logger.error(e.getMessage(), e);
-                    result.append("- Could not read CDT configuration properties\n");
-                }
-            } else {
-                result.append("- CDT configuration properties not found\n");
-            }
-            result.append("\n");
-            
-            // Check for common build systems
-            result.append("### Build System\n");
-            if (project.findMember("Makefile") != null) {
-                result.append("- Makefile-based project\n");
-            } else if (project.findMember("CMakeLists.txt") != null) {
-                result.append("- CMake-based project\n");
-            } else {
-                result.append("- Default CDT managed build\n");
-            }
-            result.append("\n");
-            
-            // Look for include directories (simplified approach)
-            result.append("### Include Directories\n");
-            IResource includePathsFile = project.findMember(".settings/language.settings.xml");
-            if (includePathsFile instanceof IFile) {
-                result.append("- Include paths defined in language.settings.xml\n");
-                // A full implementation would parse the XML file
-            } else {
-                result.append("- No specific include directories detected\n");
-            }
-            
-        } catch (Exception e) {
-            logger.error(e.getMessage(), e);
-            result.append("Error retrieving C/C++ project properties: ").append(e.getMessage()).append("\n");
-        }
-    }
-    
-    /**
-     * Appends Python project specific properties to the result.
-     * 
-     * @param project The Python project to analyze
-     * @param result The StringBuilder to append results to
-     */
-    private void appendPythonProjectProperties(IProject project, StringBuilder result) {
-        result.append("## Python Project Properties\n\n");
-        
-        try {
-            // Check for PyDev properties
-            IResource pydevProps = project.findMember(".pydevproject");
-            
-            if (pydevProps instanceof IFile) {
-                IFile pydevFile = (IFile) pydevProps;
-                try (InputStream is = pydevFile.getContents()) {
-                    // Parse the XML content
-                    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-                    DocumentBuilder builder = factory.newDocumentBuilder();
-                    org.w3c.dom.Document doc = builder.parse(is);
-                    
-                    // Get Python interpreter
-                    result.append("### Python Interpreter\n");
-                    org.w3c.dom.NodeList interpreterNodes = doc.getElementsByTagName("pydev_property");
-                    boolean foundInterpreter = false;
-                    
-                    for (int i = 0; i < interpreterNodes.getLength(); i++) {
-                        org.w3c.dom.Node node = interpreterNodes.item(i);
-                        if (node.getAttributes().getNamedItem("name") != null && 
-                            "org.python.pydev.PYTHON_PROJECT_INTERPRETER".equals(
-                                node.getAttributes().getNamedItem("name").getNodeValue())) {
-                            result.append("- ").append(node.getTextContent()).append("\n\n");
-                            foundInterpreter = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!foundInterpreter) {
-                        result.append("- Default interpreter\n\n");
-                    }
-                    
-                    // Get Python version
-                    result.append("### Python Version\n");
-                    boolean foundVersion = false;
-                    
-                    for (int i = 0; i < interpreterNodes.getLength(); i++) {
-                        org.w3c.dom.Node node = interpreterNodes.item(i);
-                        if (node.getAttributes().getNamedItem("name") != null && 
-                            "org.python.pydev.PYTHON_PROJECT_VERSION".equals(
-                                node.getAttributes().getNamedItem("name").getNodeValue())) {
-                            result.append("- ").append(node.getTextContent()).append("\n\n");
-                            foundVersion = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!foundVersion) {
-                        result.append("- Not specified\n\n");
-                    }
-                    
-                    // Get source paths
-                    result.append("### Source Paths\n");
-                    org.w3c.dom.NodeList sourcePathNodes = doc.getElementsByTagName("path");
-                    boolean foundSourcePaths = false;
-                    
-                    for (int i = 0; i < sourcePathNodes.getLength(); i++) {
-                        org.w3c.dom.Node node = sourcePathNodes.item(i);
-                        result.append("- ").append(node.getTextContent()).append("\n");
-                        foundSourcePaths = true;
-                    }
-                    
-                    if (!foundSourcePaths) {
-                        result.append("- Default source path (project root)\n");
-                    }
-                    
-                } catch (Exception e) {
-                    logger.error(e.getMessage(), e);
-                    result.append("Error parsing PyDev project file: ").append(e.getMessage()).append("\n");
-                }
-            } else {
-                result.append("PyDev project file not found. Basic Python project.\n");
-            }
-            
-            // Check for requirements.txt or setup.py
-            IResource requirementsFile = project.findMember("requirements.txt");
-            IResource setupFile = project.findMember("setup.py");
-            
-            result.append("\n### Dependencies\n");
-            if (requirementsFile instanceof IFile) {
-                result.append("- Project uses requirements.txt for dependency management\n");
-            } else if (setupFile instanceof IFile) {
-                result.append("- Project uses setup.py for packaging and dependency management\n");
-            } else {
-                result.append("- No standard dependency management files detected\n");
-            }
-            
-            // Check for virtual environment
-            IResource venvDir = project.findMember("venv");
-            IResource env = project.findMember(".env");
-            
-            result.append("\n### Virtual Environment\n");
-            if (venvDir != null && venvDir.getType() == IResource.FOLDER) {
-                result.append("- Project contains a 'venv' virtual environment directory\n");
-            } else if (env != null && env.getType() == IResource.FOLDER) {
-                result.append("- Project contains a '.env' virtual environment directory\n");
-            } else {
-                result.append("- No virtual environment directory detected in project root\n");
-            }
-            
-        } catch (Exception e) {
-            logger.error(e.getMessage(), e);
-            result.append("Error retrieving Python project properties: ").append(e.getMessage()).append("\n");
-        }
-    }
-    
-    
-    /**
-     * Appends generic project properties for projects without specific natures.
-     * 
-     * @param project The project to analyze
-     * @param result The StringBuilder to append results to
-     */
-    private void appendGenericProjectProperties(IProject project, StringBuilder result) {
-        try {
-            result.append("## Generic Project Properties\n\n");
-            
-            // Project location
-            IPath location = project.getLocation();
-            result.append("### Project Location\n");
-            result.append("- ").append(location.toOSString()).append("\n\n");
-            
-            // Check for common build files
-            result.append("### Build System Indicators\n");
-            List<String> buildFiles = new ArrayList<>();
-            
-            if (project.findMember("pom.xml") != null) {
-                buildFiles.add("Maven (pom.xml)");
-            }
-            if (project.findMember("build.gradle") != null) {
-                buildFiles.add("Gradle (build.gradle)");
-            }
-            if (project.findMember("build.xml") != null) {
-                buildFiles.add("Ant (build.xml)");
-            }
-            if (project.findMember("package.json") != null) {
-                buildFiles.add("Node.js (package.json)");
-            }
-            if (project.findMember("CMakeLists.txt") != null) {
-                buildFiles.add("CMake (CMakeLists.txt)");
-            }
-            if (project.findMember("Makefile") != null) {
-                buildFiles.add("Make (Makefile)");
-            }
-            
-            if (buildFiles.isEmpty()) {
-                result.append("- No common build system files detected\n");
-            } else {
-                for (String buildFile : buildFiles) {
-                    result.append("- ").append(buildFile).append("\n");
-                }
-            }
-            result.append("\n");
-            
-            // Project size metrics
-            result.append("### Project Metrics\n");
-            int fileCount = countResources(project, IResource.FILE);
-            int folderCount = countResources(project, IResource.FOLDER);
-            
-            result.append("- Total Files: ").append(fileCount).append("\n");
-            result.append("- Total Folders: ").append(folderCount).append("\n");
-            
-            // Check for .gitignore or other VCS files
-            result.append("\n### Version Control\n");
-            if (project.findMember(".git") != null) {
-                result.append("- Git repository (.git directory present)\n");
-            } else if (project.findMember(".gitignore") != null) {
-                result.append("- Git configuration (.gitignore present)\n");
-            } else if (project.findMember(".svn") != null) {
-                result.append("- Subversion repository (.svn directory present)\n");
-            } else {
-                result.append("- No common version control indicators detected\n");
-            }
-            
-            // Project settings
-            result.append("\n### Project Settings\n");
-            IResource settingsFolder = project.findMember(".settings");
-            if (settingsFolder != null && settingsFolder.getType() == IResource.FOLDER) {
-                IContainer container = (IContainer) settingsFolder;
-                IResource[] members = container.members();
-                
-                if (members.length > 0) {
-                    for (IResource member : members) {
-                        if (member.getType() == IResource.FILE) {
-                            result.append("- ").append(member.getName()).append("\n");
-                        }
-                    }
-                } else {
-                    result.append("- Empty .settings directory\n");
-                }
-            } else {
-                result.append("- No .settings directory found\n");
-            }
-            
-        } catch (CoreException e) {
-            logger.error(e.getMessage(), e);
-            result.append("Error retrieving generic project properties: ").append(e.getMessage()).append("\n");
-        }
-    }
-    
-    /**
-     * Counts the number of resources of a specific type in a project.
-     * 
-     * @param container The container to count resources in
-     * @param resourceType The type of resource to count (IResource.FILE or IResource.FOLDER)
-     * @return The count of resources of the specified type
-     * @throws CoreException if an error occurs while accessing resources
-     */
-    private int countResources(IContainer container, int resourceType) throws CoreException {
-        int count = 0;
-        
-        IResource[] members = container.members();
-        for (IResource resource : members) {
-            if (resource.getType() == resourceType) {
-                count++;
-            }
-            
-            if (resource instanceof IContainer) {
-                count += countResources((IContainer) resource, resourceType);
-            }
-        }
-        
-        return count;
-    }
-    
-    /**
-     * Gets the project layout with resource metadata for caching.
-     * 
-     * @param projectName The name of the project to analyze
-     * @return ResourceToolResult with layout content and cacheable descriptor,
-     *         or a transient result if there was an error
-     */
-    public ResourceToolResult getProjectLayoutWithResource(String projectName) {
-        return getProjectLayoutWithResource(projectName, null, -1);
+        return workspacePath.segmentCount() > 1 ? workspacePath.removeFirstSegments( 1 ).toString() : "";
     }
 
-    /**
-     * Gets the project layout with resource metadata for caching, with optional scope and depth.
-     */
-    public ResourceToolResult getProjectLayoutWithResource(String projectName, String scopePath, int maxDepth) {
-        final String toolName = "getProjectLayout";
-        
-        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-        if (project == null || !project.exists()) {
-            return ResourceToolResult.transientResult(
-                "Project '" + projectName + "' not found.", 
-                toolName
-            );
+    /** A classpath library as an absolute filesystem path, whether or not it is in the workspace. */
+    private static String onDisk( IPath classpathPath )
+    {
+        IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+        IResource inWorkspace = root.findMember( classpathPath );
+        if ( inWorkspace != null && inWorkspace.getLocation() != null )
+        {
+            return inWorkspace.getLocation().toOSString();
         }
-        
-        if (!project.isOpen()) {
-            return ResourceToolResult.transientResult(
-                "Project '" + projectName + "' is closed.", 
-                toolName
-            );
-        }
-        
-        try {
-            // Delegate to the main method that handles scope and depth
-            String content = getProjectLayout(projectName, scopePath, maxDepth);
-            
-            // Return cacheable result for project layout
-            return ResourceToolResult.forProjectLayout(projectName, content, toolName);
-            
-        } catch (Exception e) {
-            logger.error(e.getMessage(), e);
-            return ResourceToolResult.transientResult(
-                "Error retrieving project layout: " + e.getMessage(), 
-                toolName
-            );
-        }
+        return classpathPath.toOSString();
     }
+
+    
 }

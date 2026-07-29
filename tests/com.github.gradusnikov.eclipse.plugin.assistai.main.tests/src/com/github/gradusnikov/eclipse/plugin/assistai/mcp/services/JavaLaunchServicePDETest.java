@@ -28,6 +28,10 @@ import org.osgi.framework.BundleContext;
 import org.osgi.framework.FrameworkUtil;
 import org.osgi.util.tracker.ServiceTracker;
 
+import java.util.List;
+
+import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.LaunchConfigurationsResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.JavaLaunchService;
 
 /**
@@ -40,7 +44,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.JavaLaunchService;
  */
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
 @TestMethodOrder( MethodOrderer.OrderAnnotation.class )
-public class JavaLaunchServiceTest
+public class JavaLaunchServicePDETest
 {
     private static final String JUNIT_CONFIG_NAME  = "AssistAITest_JUnitConfig";
     private static final String JAVA_CONFIG_NAME   = "AssistAITest_JavaAppConfig";
@@ -58,7 +62,7 @@ public class JavaLaunchServiceTest
     @BeforeAll
     public void setUp() throws Exception
     {
-        BundleContext bundleContext = FrameworkUtil.getBundle( JavaLaunchServiceTest.class ).getBundleContext();
+        BundleContext bundleContext = FrameworkUtil.getBundle( JavaLaunchServicePDETest.class ).getBundleContext();
 
         ServiceTracker<ILog, ILog> logTracker = new ServiceTracker<>( bundleContext, ILog.class, null );
         logTracker.open();
@@ -125,65 +129,75 @@ public class JavaLaunchServiceTest
     }
 
     // -------------------------------------------------------------------------
-    // Output format
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private List<String> configurationNames( String typeFilter )
+    {
+        return service.listLaunchConfigurations( typeFilter ).configurations().stream()
+                .map( LaunchConfigurationsResponse.LaunchConfigurationInfo::name )
+                .toList();
+    }
+
+    private List<String> typeIds( String typeFilter )
+    {
+        return service.listLaunchConfigurations( typeFilter ).configurations().stream()
+                .map( LaunchConfigurationsResponse.LaunchConfigurationInfo::typeId )
+                .toList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Shape of the result
     // -------------------------------------------------------------------------
 
     @Test
     @Order( 1 )
-    public void testListAll_returnsJsonArray()
+    public void testListAll_reportsCountMatchingTheListing()
     {
-        String result = service.listLaunchConfigurations( null );
+        LaunchConfigurationsResponse result = service.listLaunchConfigurations( null );
+
         assertNotNull( result );
-        assertTrue( result.startsWith( "[" ), "Expected JSON array start '[', got: " + result );
-        assertTrue( result.endsWith( "]" ),   "Expected JSON array end ']', got: " + result );
+        assertEquals( result.configurations().size(), result.totalConfigurations() );
     }
 
     @Test
     @Order( 2 )
     public void testListAll_emptyFilter_sameAsNull()
     {
-        String withNull  = service.listLaunchConfigurations( null );
-        String withEmpty = service.listLaunchConfigurations( "" );
-        String withAll   = service.listLaunchConfigurations( "all" );
-        assertEquals( withNull, withEmpty, "null and empty filter should return the same result" );
-        assertEquals( withNull, withAll,   "null and 'all' filter should return the same result" );
+        List<String> withNull = configurationNames( null );
+
+        assertEquals( withNull, configurationNames( "" ), "null and empty filter should agree" );
+        assertEquals( withNull, configurationNames( "all" ), "null and 'all' filter should agree" );
     }
 
     @Test
     @Order( 3 )
-    public void testListAll_containsExpectedFields()
+    public void testListAll_populatesTheFieldsACallerActsOn()
     {
-        String result = service.listLaunchConfigurations( null );
-        // "name" is always present; other fields only appear when non-empty.
-        // Our setUp creates configs with project and mainClass set, so all
-        // five fields should appear somewhere in a non-empty array.
-        if ( !"[]".equals( result ) )
-        {
-            assertTrue( result.contains( "\"name\":" ), "Missing 'name' field" );
-        }
-        // With our test fixtures (project + mainClass set) the optional fields appear too
-        if ( junitConfig != null )
-        {
-            assertTrue( result.contains( "\"typeId\":"      ), "Missing 'typeId' field" );
-            assertTrue( result.contains( "\"typeName\":"    ), "Missing 'typeName' field" );
-            assertTrue( result.contains( "\"projectName\":" ), "Missing 'projectName' field" );
-            assertTrue( result.contains( "\"mainClass\":"   ), "Missing 'mainClass' field" );
-        }
+        if ( junitConfig == null ) return;   // type not available in this environment
+
+        var found = service.listLaunchConfigurations( null ).configurations().stream()
+                .filter( config -> JUNIT_CONFIG_NAME.equals( config.name() ) )
+                .findFirst()
+                .orElseThrow( () -> new AssertionError( "our JUnit config was not listed" ) );
+
+        assertNotNull( found.typeId() );
+        assertNotNull( found.typeName() );
+        assertNotNull( found.projectName() );
+        assertNotNull( found.mainClass() );
     }
 
     // -------------------------------------------------------------------------
-    // Filtering — junit
+    // Filtering - junit
     // -------------------------------------------------------------------------
 
     @Test
     @Order( 10 )
     public void testFilterJunit_containsOurJUnitConfig()
     {
-        if ( junitConfig == null ) return;   // type not available in this environment
+        if ( junitConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "junit" );
-        assertTrue( result.contains( "\"" + JUNIT_CONFIG_NAME + "\"" ),
-            "Expected JUnit config in result, got: " + result );
+        assertTrue( configurationNames( "junit" ).contains( JUNIT_CONFIG_NAME ) );
     }
 
     @Test
@@ -192,37 +206,31 @@ public class JavaLaunchServiceTest
     {
         if ( javaConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "junit" );
-        assertFalse( result.contains( "\"" + JAVA_CONFIG_NAME + "\"" ),
-            "Java app config should not appear in 'junit' filter result" );
+        assertFalse( configurationNames( "junit" ).contains( JAVA_CONFIG_NAME ) );
     }
 
     @Test
     @Order( 12 )
-    public void testFilterJunit_typeIdIsCorrect()
+    public void testFilterJunit_excludesThePdeType()
     {
         if ( junitConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "junit" );
-        // Every typeId in the result must be the JUnit type
-        // Simple check: the PDE type ID must not appear
-        assertFalse( result.contains( PDE_JUNIT_TYPE_ID ),
-            "PDE JUnit type should not appear in 'junit' filter result" );
+        // Every listed configuration must be of the plain JUnit type, which the
+        // string form could only approximate by searching for an absent substring.
+        assertFalse( typeIds( "junit" ).contains( PDE_JUNIT_TYPE_ID ) );
     }
 
     // -------------------------------------------------------------------------
-    // Filtering — junit-plugin
+    // Filtering - junit-plugin
     // -------------------------------------------------------------------------
 
     @Test
     @Order( 20 )
     public void testFilterJunitPlugin_containsOurPDEConfig()
     {
-        if ( pdeConfig == null ) return;   // PDE type not available
+        if ( pdeConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "junit-plugin" );
-        assertTrue( result.contains( "\"" + PDE_CONFIG_NAME + "\"" ),
-            "Expected PDE JUnit config in result, got: " + result );
+        assertTrue( configurationNames( "junit-plugin" ).contains( PDE_CONFIG_NAME ) );
     }
 
     @Test
@@ -231,13 +239,11 @@ public class JavaLaunchServiceTest
     {
         if ( junitConfig == null || pdeConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "junit-plugin" );
-        assertFalse( result.contains( "\"" + JUNIT_CONFIG_NAME + "\"" ),
-            "Plain JUnit config should not appear in 'junit-plugin' filter result" );
+        assertFalse( configurationNames( "junit-plugin" ).contains( JUNIT_CONFIG_NAME ) );
     }
 
     // -------------------------------------------------------------------------
-    // Filtering — all
+    // Filtering - all
     // -------------------------------------------------------------------------
 
     @Test
@@ -246,28 +252,31 @@ public class JavaLaunchServiceTest
     {
         if ( junitConfig == null || javaConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "all" );
-        assertTrue( result.contains( "\"" + JUNIT_CONFIG_NAME + "\"" ),
-            "Expected JUnit config in 'all' result" );
-        assertTrue( result.contains( "\"" + JAVA_CONFIG_NAME + "\"" ),
-            "Expected Java app config in 'all' result" );
+        List<String> names = configurationNames( "all" );
+        assertTrue( names.contains( JUNIT_CONFIG_NAME ) );
+        assertTrue( names.contains( JAVA_CONFIG_NAME ) );
     }
 
     // -------------------------------------------------------------------------
-    // Filtering — unknown type
+    // Filtering - unknown type
     // -------------------------------------------------------------------------
 
     @Test
     @Order( 40 )
-    public void testFilterUnknown_returnsEmptyArray()
+    public void testFilterUnknown_returnsNoConfigurations()
     {
-        String result = service.listLaunchConfigurations( "completely-unknown-type-xyz-12345" );
-        assertEquals( "[]", result,
-            "Expected empty array for unknown type filter, got: " + result );
+        LaunchConfigurationsResponse result =
+                service.listLaunchConfigurations( "completely-unknown-type-xyz-12345" );
+
+        assertEquals( 0, result.totalConfigurations() );
+        assertTrue( result.configurations().isEmpty() );
+        // The filter is echoed, so an empty result from a filter stays distinguishable
+        // from an empty workspace.
+        assertEquals( "completely-unknown-type-xyz-12345", result.typeFilter() );
     }
 
     // -------------------------------------------------------------------------
-    // Filtering — substring of type ID
+    // Filtering - substring of type ID
     // -------------------------------------------------------------------------
 
     @Test
@@ -277,9 +286,7 @@ public class JavaLaunchServiceTest
         if ( javaConfig == null ) return;
 
         // "localJava" is a substring of "org.eclipse.jdt.launching.localJavaApplication"
-        String result = service.listLaunchConfigurations( "localJava" );
-        assertTrue( result.contains( "\"" + JAVA_CONFIG_NAME + "\"" ),
-            "Expected Java app config when filtering by 'localJava' substring, got: " + result );
+        assertTrue( configurationNames( "localJava" ).contains( JAVA_CONFIG_NAME ) );
     }
 
     @Test
@@ -288,24 +295,23 @@ public class JavaLaunchServiceTest
     {
         if ( junitConfig == null || javaConfig == null ) return;
 
-        String result = service.listLaunchConfigurations( "localJava" );
-        assertFalse( result.contains( "\"" + JUNIT_CONFIG_NAME + "\"" ),
-            "JUnit config should not appear when filtering by 'localJava' substring" );
+        assertFalse( configurationNames( "localJava" ).contains( JUNIT_CONFIG_NAME ) );
     }
 
     // -------------------------------------------------------------------------
-    // JSON validity
+    // Serialization
     // -------------------------------------------------------------------------
 
     @Test
     @Order( 60 )
-    public void testListLaunchConfigurations_outputIsValidJson() throws Exception
+    public void testResponseSerializesIntoStructuredContent()
     {
-        // The output must always be parseable JSON regardless of what launch configs exist.
-        String result = service.listLaunchConfigurations( null );
-        assertNotNull( result );
-        com.fasterxml.jackson.databind.JsonNode node =
-            new com.fasterxml.jackson.databind.ObjectMapper().readTree( result );
-        assertTrue( node.isArray(), "Expected a JSON array, got: " + result );
+        // Replaces the old "output is valid JSON" test. The tool no longer builds
+        // JSON itself; what matters is that the record survives the mapper the
+        // framework puts it through.
+        var content = McpJson.toMap( service.listLaunchConfigurations( null ) );
+
+        assertTrue( content.containsKey( "configurations" ) );
+        assertTrue( content.containsKey( "totalConfigurations" ) );
     }
 }

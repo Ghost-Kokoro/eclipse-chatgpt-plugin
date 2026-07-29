@@ -1,8 +1,11 @@
 package com.github.gradusnikov.eclipse.plugin.assistai.mcp.services;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +34,7 @@ import org.eclipse.pde.core.target.ITargetHandle;
 import org.eclipse.pde.core.target.ITargetPlatformService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -40,6 +44,12 @@ import org.osgi.framework.BundleContext;
 import org.osgi.framework.FrameworkUtil;
 import org.osgi.util.tracker.ServiceTracker;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse.TargetStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse.RunStatus;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.PDEService;
 
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
@@ -236,21 +246,21 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
 
     @Test
     @Order( 1 )
-    public void testGetActiveTarget_returnsNonEmptyString()
+    public void testGetActiveTarget_describesTheTargetInForce()
     {
-        String result = service.getActiveTarget();
+        ActiveTargetResponse result = service.getActiveTarget();
         assertNotNull( result, "getActiveTarget must not return null" );
-        assertTrue( !result.isEmpty(), "getActiveTarget must not return an empty string" );
+        assertNotEquals( TargetStatus.FAILED, result.status(),
+            () -> String.valueOf( result.diagnostics() ) );
     }
 
     @Test
     @Order( 2 )
-    public void testGetActiveTarget_containsExpectedKeyword()
+    public void testGetActiveTarget_countsBundlesOnlyOnceResolved()
     {
-        String result = service.getActiveTarget();
-        assertTrue(
-            result.startsWith( "Active target:" ) || result.startsWith( "Error getting active target:" ),
-            "Unexpected getActiveTarget output: " + result );
+        ActiveTargetResponse result = service.getActiveTarget();
+        assertEquals( result.resolved(), result.bundleCount() != null,
+            "0 would say the target resolved to nothing; an unresolved target has no count" );
     }
 
     // -------------------------------------------------------------------------
@@ -267,12 +277,13 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
 
     @Test
     @Order( 4 )
-    public void testSetActiveTarget_missingFile_returnsErrorString()
+    public void testSetActiveTarget_missingFile_isAFailureWithACode()
     {
-        String result = service.setActiveTarget( "/NonExistentProject/does-not-exist.target" );
+        ActiveTargetResponse result = service.setActiveTarget( "/NonExistentProject/does-not-exist.target" );
         assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error message for missing .target file, got: " + result );
+        assertEquals( TargetStatus.FAILED, result.status() );
+        assertEquals( List.of( DiagnosticCode.RESOURCE_NOT_FOUND ),
+            result.diagnostics().stream().map( Diagnostic::code ).toList() );
     }
 
     // -------------------------------------------------------------------------
@@ -281,24 +292,21 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
 
     @Test
     @Order( 5 )
-    public void testReloadTarget_returnsNonEmptyString()
+    public void testReloadTarget_reportsAStatus()
     {
-        String result = service.reloadTarget();
+        ActiveTargetResponse result = service.reloadTarget();
         assertNotNull( result );
-        assertTrue( !result.isEmpty(), "reloadTarget must not return an empty string" );
+        assertNotNull( result.status() );
     }
 
     @Test
     @Order( 6 )
-    public void testReloadTarget_outputIsCoherent()
+    public void testReloadTarget_agreesWithGetActiveTarget()
     {
-        String result = service.reloadTarget();
-        assertTrue(
-            result.startsWith( "Target platform reloaded:" )
-                || result.startsWith( "Error: No explicit target platform" )
-                || result.startsWith( "Error reloading target:" )
-                || result.startsWith( "Error: Timed out" ),
-            "Unexpected reloadTarget output: " + result );
+        // With no target file set there is nothing to reload - which reload used to call
+        // an error while getActiveTarget called the identical state perfectly normal.
+        ActiveTargetResponse reloaded = service.reloadTarget();
+        assertEquals( service.getActiveTarget().explicitTarget(), reloaded.explicitTarget() );
     }
 
     // -------------------------------------------------------------------------
@@ -323,12 +331,16 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
 
     @Test
     @Order( 9 )
-    public void testRunJUnitPluginTests_nonExistentProject_returnsErrorString()
+    public void testRunJUnitPluginTests_nonExistentProject_reportsProjectNotFound()
     {
-        String result = service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10 );
+        TestRunResponse result = service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10 );
         assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        // The caller can tell "you named a project that is not here" from "the tests ran
+        // and failed" without reading either sentence.
+        assertEquals( RunStatus.FAILED_TO_START, result.status() );
+        assertEquals( List.of( DiagnosticCode.PROJECT_NOT_FOUND ),
+            result.diagnostics().stream().map( Diagnostic::code ).toList() );
+        assertEquals( 0, result.summary().total() );
     }
 
     // -------------------------------------------------------------------------
@@ -353,13 +365,16 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
 
     @Test
     @Order( 12 )
-    public void testRunJUnitPluginTestClass_nonExistentProject_returnsErrorString()
+    public void testRunJUnitPluginTestClass_nonExistentProject_reportsProjectNotFound()
     {
-        String result = service.runJUnitPluginTestClass(
+        TestRunResponse result = service.runJUnitPluginTestClass(
             "NonExistentProject_PDEPlugin", "com.example.MyTest", 10 );
         assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        assertEquals( RunStatus.FAILED_TO_START, result.status() );
+        assertEquals( List.of( DiagnosticCode.PROJECT_NOT_FOUND ),
+            result.diagnostics().stream().map( Diagnostic::code ).toList() );
+        assertEquals( List.of( "com.example.MyTest" ), result.requestedClasses(),
+            "what was asked for is echoed back even when nothing ran" );
     }
 
     // -------------------------------------------------------------------------
@@ -378,11 +393,16 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
     @Order( 12 )
     public void testRunJUnitPluginTestClasses_missingClasses_reportsAllNames()
     {
-        String result = service.runJUnitPluginTestClasses(
+        TestRunResponse result = service.runJUnitPluginTestClasses(
             TEST_PLUGIN_PROJECT, List.of( "missing.FirstPDETest", "missing.SecondPDETest" ), 60 );
 
-        assertTrue( result.contains( "missing.FirstPDETest" ), result );
-        assertTrue( result.contains( "missing.SecondPDETest" ), result );
+        assertEquals( RunStatus.FAILED_TO_START, result.status() );
+        assertEquals( List.of( DiagnosticCode.TEST_CLASS_NOT_FOUND ),
+            result.diagnostics().stream().map( Diagnostic::code ).toList() );
+        // Both names, not just the first one to fail to resolve.
+        String message = result.diagnostics().get( 0 ).message();
+        assertTrue( message.contains( "missing.FirstPDETest" ), message );
+        assertTrue( message.contains( "missing.SecondPDETest" ), message );
     }
 
     // -------------------------------------------------------------------------
@@ -428,46 +448,58 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
     @Order( 20 )
     public void testRunJUnitPluginTestClass_realProject_passes() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTestClass_realProject_passes",
-            () -> service.runJUnitPluginTestClass(
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_realProject_passes", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
                 TEST_PLUGIN_PROJECT,
                 "com.example.pdetest.SimplePluginTest",
-                120 ) );
-        System.out.println( "runJUnitPluginTestClass result: " + result );
-        assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
-            "Expected passing tests in result, got: " + result );
+                120 );
+            System.out.println( "runJUnitPluginTestClass result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 21 )
     public void testRunJUnitPluginTests_realProject_launches() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTests_realProject_launches",
-            () -> service.runJUnitPluginTests(
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTests_realProject_launches", () -> {
+            TestRunResponse result = service.runJUnitPluginTests(
                 TEST_PLUGIN_PROJECT,
-                120 ) );
-        System.out.println( "runJUnitPluginTests result: " + result );
-        assertTrue( !result.contains( "does not exist" ),
-            "Got 'does not exist' error - container format is wrong: " + result );
-        assertTrue( result.contains( "Passed" ) || result.contains( "passed" )
-            || result.contains( "did not report results" ),
-            "Expected test results or timeout, got: " + result );
+                120 );
+            System.out.println( "runJUnitPluginTests result: " + result );
+            assertLaunched( result );
+            // A wrong CONTAINER format used to surface as "does not exist" prose; it is now
+            // a launch that never starts, which is what FAILED_TO_START names.
+            assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
+                result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 22 )
     public void testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce",
-            () -> service.runJUnitPluginTestClasses(
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClasses(
                 TEST_PLUGIN_PROJECT,
                 List.of( "com.example.pdetest.SimplePluginTest",
                          "com.example.pdetest.SecondPluginTest",
                          "com.example.pdetest.SimplePluginTest" ),
-                120 ) );
-        System.out.println( "runJUnitPluginTestClasses result: " + result );
-        assertTrue( result.contains( "Total: 2" ), result );
-        assertTrue( result.contains( "Passed: 2" ), result );
+                120 );
+            System.out.println( "runJUnitPluginTestClasses result: " + result );
+            assertLaunched( result );
+            // The repeated class is de-duplicated, so two tests run, not three.
+            assertEquals( 2, result.summary().total(), result.summaryText() );
+            assertEquals( 2, result.summary().passed(), result.summaryText() );
+        } );
+    }
+
+    private static void assertLaunched( TestRunResponse result )
+    {
+        assertTrue( result.status() != RunStatus.FAILED_TO_START,
+            "Skipping: PDE launcher failed to start (" + result.summaryText() + ")" );
     }
 
     // -------------------------------------------------------------------------
@@ -478,55 +510,50 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
     @Order( 22 )
     public void testRunJUnitPluginTests_includeAllPlugins_nonExistentProject()
     {
-        String result = service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10, false, true, List.of() );
-        assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        assertProjectNotFound(
+            service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10, false, true, List.of() ) );
     }
 
     @Test
     @Order( 23 )
     public void testRunJUnitPluginTests_selectedPlugins_nonExistentProject()
     {
-        String result = service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10, false, false, List.of() );
-        assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        assertProjectNotFound(
+            service.runJUnitPluginTests( "NonExistentProject_PDEPlugin", 10, false, false, List.of() ) );
     }
 
     @Test
     @Order( 24 )
     public void testRunJUnitPluginTests_withAdditionalBundles_nonExistentProject()
     {
-        String result = service.runJUnitPluginTests(
+        assertProjectNotFound( service.runJUnitPluginTests(
             "NonExistentProject_PDEPlugin", 10, false, false,
-            List.of( "org.eclipse.core.runtime", "org.eclipse.ui" ) );
-        assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+            List.of( "org.eclipse.core.runtime", "org.eclipse.ui" ) ) );
     }
 
     @Test
     @Order( 25 )
     public void testRunJUnitPluginTestClass_includeAllPlugins_nonExistentProject()
     {
-        String result = service.runJUnitPluginTestClass(
-            "NonExistentProject_PDEPlugin", "com.example.MyTest", 10, false, true, List.of() );
-        assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        assertProjectNotFound( service.runJUnitPluginTestClass(
+            "NonExistentProject_PDEPlugin", "com.example.MyTest", 10, false, true, List.of() ) );
     }
 
     @Test
     @Order( 26 )
     public void testRunJUnitPluginTestClass_withAdditionalBundles_nonExistentProject()
     {
-        String result = service.runJUnitPluginTestClass(
+        assertProjectNotFound( service.runJUnitPluginTestClass(
             "NonExistentProject_PDEPlugin", "com.example.MyTest", 10, false, false,
-            List.of( "org.eclipse.core.runtime" ) );
+            List.of( "org.eclipse.core.runtime" ) ) );
+    }
+
+    private static void assertProjectNotFound( TestRunResponse result )
+    {
         assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error for non-existent project, got: " + result );
+        assertEquals( RunStatus.FAILED_TO_START, result.status(), result.summaryText() );
+        assertEquals( List.of( DiagnosticCode.PROJECT_NOT_FOUND ),
+            result.diagnostics().stream().map( Diagnostic::code ).toList() );
     }
 
     // -------------------------------------------------------------------------
@@ -537,40 +564,46 @@ public class ServicePluginPDETest extends AbstractOperationPDETest
     @Order( 30 )
     public void testRunJUnitPluginTestClass_selectedPluginsMode_realProject() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTestClass_selectedPluginsMode_realProject",
-            () -> service.runJUnitPluginTestClass(
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_selectedPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
                 TEST_PLUGIN_PROJECT,
                 "com.example.pdetest.SimplePluginTest",
-                120, false, false, List.of() ) );
-        System.out.println( "runJUnitPluginTestClass (selected) result: " + result );
-        assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
-            "Expected passing tests in result, got: " + result );
+                120, false, false, List.of() );
+            System.out.println( "runJUnitPluginTestClass (selected) result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 31 )
     public void testRunJUnitPluginTestClass_allPluginsMode_realProject() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTestClass_allPluginsMode_realProject",
-            () -> service.runJUnitPluginTestClass(
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTestClass_allPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTestClass(
                 TEST_PLUGIN_PROJECT,
                 "com.example.pdetest.SimplePluginTest",
-                120, false, true, List.of() ) );
-        System.out.println( "runJUnitPluginTestClass (all) result: " + result );
-        assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
-            "Expected passing tests in result, got: " + result );
+                120, false, true, List.of() );
+            System.out.println( "runJUnitPluginTestClass (all) result: " + result );
+            assertLaunched( result );
+            assertEquals( RunStatus.COMPLETED, result.status(), result.summaryText() );
+            assertTrue( result.summary().passed() > 0, result.summaryText() );
+        } );
     }
 
     @Test
     @Order( 32 )
     public void testRunJUnitPluginTests_selectedPluginsMode_realProject() throws Exception
     {
-        String result = runWithOperation( "testRunJUnitPluginTests_selectedPluginsMode_realProject",
-            () -> service.runJUnitPluginTests(
-                TEST_PLUGIN_PROJECT, 120, false, false, List.of() ) );
-        System.out.println( "runJUnitPluginTests (selected) result: " + result );
-        assertTrue( result.contains( "Passed" ) || result.contains( "passed" )
-            || result.contains( "did not report results" ),
-            "Expected test results or timeout, got: " + result );
+        runWithOperationAndPrintConsoleOnProblems( "testRunJUnitPluginTests_selectedPluginsMode_realProject", () -> {
+            TestRunResponse result = service.runJUnitPluginTests(
+                TEST_PLUGIN_PROJECT, 120, false, false, List.of() );
+            System.out.println( "runJUnitPluginTests (selected) result: " + result );
+            assertLaunched( result );
+            assertTrue( result.status() == RunStatus.COMPLETED || result.status() == RunStatus.TIMED_OUT,
+                result.summaryText() );
+        } );
     }
+
 }

@@ -3,37 +3,57 @@ package com.github.gradusnikov.eclipse.assistai.mcp.services;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
+import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.e4.core.di.annotations.Creatable;
-import org.eclipse.jdt.core.Flags;
-import org.eclipse.jdt.core.IAnnotation;
 import org.eclipse.jdt.core.ICompilationUnit;
-import org.eclipse.jdt.core.IField;
 import org.eclipse.jdt.core.IImportContainer;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.ISourceRange;
 import org.eclipse.jdt.core.IType;
-import org.eclipse.jdt.core.ITypeParameter;
 import org.eclipse.jdt.core.JavaCore;
-import org.eclipse.jdt.core.JavaModelException;
-import org.eclipse.jdt.core.Signature;
 import org.eclipse.jface.text.Document;
 
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MethodSourceResponse;
+import com.github.gradusnikov.eclipse.assistai.resources.ContentRange;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
 
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 
+/**
+ * Reads the source of a single Java type: whole methods, or the whole file with its
+ * imports and the method bodies the caller did not ask for collapsed.
+ * <p>
+ * Both results are exact source text. Where the previous renderings prefixed every
+ * line with its number and replaced a collapsed body with a
+ * {@code // ... (lines 40-91)} comment, the line numbers are now ranges in the result
+ * - {@code MethodSource.range} and {@code ResourceReadResult.omittedRanges} - so a
+ * caller reads them as data rather than recovering them from the code it was given.
+ * <p>
+ * The outline tool used to live here as well. It now returns a record from
+ * {@link CodeAnalysisService#getClassOutline}, and the declaration, field and method
+ * formatters went with it rather than being kept in two places. What is still needed
+ * here - rendering a method's parameter list, so a caller's {@code methodSignature}
+ * filter can be matched against it - is borrowed from there.
+ */
 @Creatable
 @Singleton
 public class OutlineService
@@ -45,508 +65,313 @@ public class OutlineService
     AiIgnoreService aiIgnoreService;
 
     /**
-     * Returns a compact outline of a Java class: class declaration, fields,
-     * method signatures (no bodies), and inner types - all with line numbers.
+     * Returns the source of the named methods of one type.
+     * <p>
+     * Each method is returned as exact text with its own line range, rather than
+     * concatenated under a banner comment: several methods of one file are several
+     * disjoint regions, and a single blob of content would say nothing about which
+     * lines belong to which.
+     *
+     * @param methodNames comma-separated; a name that matches nothing is reported in
+     *            {@code notFound} rather than as a trailing comment in the source
+     * @param methodSignature optional parameter-type hint, matched against the same
+     *            rendering {@link CodeAnalysisService#formatMethodParameters} produces
+     *            for the outline, so the two agree on what an overload looks like
+     * @param includeJavadoc whether each method's range starts at its Javadoc
      */
-    public ResourceToolResult getClassOutline(String fullyQualifiedClassName, boolean includeFields)
+    public MethodSourceResponse getMethodSource( String fullyQualifiedClassName, String methodNames,
+                                                 String methodSignature, boolean includeJavadoc )
     {
-        final String toolName = "getClassOutline";
+        Set<String> requestedMethods = methodNames == null ? Set.of()
+                : Arrays.stream( methodNames.split( "," ) )
+                        .map( String::trim )
+                        .filter( s -> !s.isEmpty() )
+                        .collect( Collectors.toCollection( LinkedHashSet::new ) );
 
-        for (IJavaProject javaProject : getAvailableJavaProjects())
+        if ( requestedMethods.isEmpty() )
+        {
+            // Unclassified rather than a dedicated code: DiagnosticCode describes what
+            // the workspace could not do, and this is a request that asked for nothing.
+            return MethodSourceResponse.failed( fullyQualifiedClassName, Diagnostic.fatal(
+                    DiagnosticCode.INTERNAL_ERROR,
+                    "No method names specified. Pass one or more comma-separated method names." ) );
+        }
+
+        for ( IJavaProject javaProject : getAvailableJavaProjects() )
         {
             try
             {
-                IType type = javaProject.findType(fullyQualifiedClassName);
-                if (type == null)
+                IType type = javaProject.findType( fullyQualifiedClassName );
+                if ( type == null )
+                {
                     continue;
+                }
 
                 ICompilationUnit cu = type.getCompilationUnit();
-                if (cu == null)
-                    continue;
-
-                if (cu.getResource() != null && aiIgnoreService.isExcluded(cu.getResource()))
+                if ( cu == null )
                 {
-                    return ResourceToolResult.transientResult(
-                            "Access denied: '" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore.", toolName);
+                    continue;
+                }
+
+                IResource resource = cu.getResource();
+                if ( resource != null && aiIgnoreService.isExcluded( resource ) )
+                {
+                    return MethodSourceResponse.failed( fullyQualifiedClassName, Diagnostic.fatal(
+                            DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                            "'" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore." ) );
                 }
 
                 String source = cu.getBuffer().getContents();
-                Document doc = new Document(source);
+                Document doc = new Document( source );
 
-                StringBuilder result = new StringBuilder();
+                List<MethodSourceResponse.MethodSource> found = new ArrayList<>();
+                List<String> notFound = new ArrayList<>( requestedMethods );
 
-                ISourceRange sourceRange = type.getSourceRange();
-                int classStartLine = doc.getLineOfOffset(sourceRange.getOffset()) + 1;
-                int classEndLine = doc.getLineOfOffset(sourceRange.getOffset() + sourceRange.getLength() - 1) + 1;
-
-                result.append("=== ").append(fullyQualifiedClassName)
-                      .append(" (lines ").append(classStartLine).append("-").append(classEndLine).append(") ===\n\n");
-
-                result.append(String.format("  %4d: %s\n\n", classStartLine, formatClassDeclaration(type)));
-
-                if (includeFields)
+                for ( IMethod method : type.getMethods() )
                 {
-                    IField[] fields = type.getFields();
-                    if (fields.length > 0)
+                    if ( !requestedMethods.contains( method.getElementName() ) )
                     {
-                        result.append("  Fields:\n");
-                        for (IField field : fields)
-                        {
-                            int fieldLine = doc.getLineOfOffset(field.getSourceRange().getOffset()) + 1;
-                            result.append(String.format("    %4d: %s\n", fieldLine, formatFieldDeclaration(field)));
-                        }
-                        result.append("\n");
-                    }
-                }
-
-                IMethod[] methods = type.getMethods();
-                if (methods.length > 0)
-                {
-                    result.append("  Methods:\n");
-                    for (IMethod method : methods)
-                    {
-                        ISourceRange methodRange = method.getSourceRange();
-                        int methodStartLine = doc.getLineOfOffset(methodRange.getOffset()) + 1;
-                        int methodEndLine = doc.getLineOfOffset(
-                                methodRange.getOffset() + methodRange.getLength() - 1) + 1;
-                        result.append(String.format("    %4d-%4d: %s\n",
-                                methodStartLine, methodEndLine, formatMethodSignature(method)));
-                    }
-                    result.append("\n");
-                }
-
-                IType[] innerTypes = type.getTypes();
-                if (innerTypes.length > 0)
-                {
-                    result.append("  Inner Types:\n");
-                    for (IType innerType : innerTypes)
-                    {
-                        ISourceRange innerRange = innerType.getSourceRange();
-                        int innerStartLine = doc.getLineOfOffset(innerRange.getOffset()) + 1;
-                        int innerEndLine = doc.getLineOfOffset(
-                                innerRange.getOffset() + innerRange.getLength() - 1) + 1;
-                        result.append(String.format("    %4d-%4d: %s\n",
-                                innerStartLine, innerEndLine, formatClassDeclaration(innerType)));
-                    }
-                }
-
-                return ResourceToolResult.fromJavaType(type, result.toString(), toolName);
-            }
-            catch (Exception e)
-            {
-                logger.error(e.getMessage(), e);
-            }
-        }
-
-        return ResourceToolResult.transientResult("Type not found: " + fullyQualifiedClassName, toolName);
-    }
-
-    /**
-     * Returns source code for specific method(s) with line numbers.
-     * Accepts comma-separated method names to retrieve multiple methods in one call.
-     */
-    public ResourceToolResult getMethodSource(String fullyQualifiedClassName, String methodNames,
-            String methodSignature, boolean includeJavadoc)
-    {
-        final String toolName = "getMethodSource";
-
-        Set<String> requestedMethods = Arrays.stream(methodNames.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toSet());
-
-        if (requestedMethods.isEmpty())
-        {
-            return ResourceToolResult.transientResult("No method names specified.", toolName);
-        }
-
-        for (IJavaProject javaProject : getAvailableJavaProjects())
-        {
-            try
-            {
-                IType type = javaProject.findType(fullyQualifiedClassName);
-                if (type == null)
-                    continue;
-
-                ICompilationUnit cu = type.getCompilationUnit();
-                if (cu == null)
-                    continue;
-
-                if (cu.getResource() != null && aiIgnoreService.isExcluded(cu.getResource()))
-                {
-                    return ResourceToolResult.transientResult(
-                            "Access denied: '" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore.", toolName);
-                }
-
-                String source = cu.getBuffer().getContents();
-                String[] lines = source.split("\n", -1);
-                Document doc = new Document(source);
-                int width = String.valueOf(lines.length).length();
-
-                StringBuilder result = new StringBuilder();
-                List<String> found = new ArrayList<>();
-                List<String> notFound = new ArrayList<>(requestedMethods);
-
-                for (IMethod method : type.getMethods())
-                {
-                    if (!requestedMethods.contains(method.getElementName()))
                         continue;
-
-                    if (methodSignature != null && !methodSignature.isEmpty())
-                    {
-                        String params = formatMethodParams(method);
-                        if (!params.contains(methodSignature))
-                            continue;
                     }
 
-                    found.add(method.getElementName());
-                    notFound.remove(method.getElementName());
+                    String parameters = CodeAnalysisService.formatMethodParameters( method );
+                    if ( methodSignature != null && !methodSignature.isEmpty()
+                            && !parameters.contains( methodSignature ) )
+                    {
+                        continue;
+                    }
+
+                    notFound.remove( method.getElementName() );
 
                     ISourceRange range = method.getSourceRange();
                     int startOffset = range.getOffset();
                     int endOffset = startOffset + range.getLength();
 
-                    if (includeJavadoc)
+                    // JDT's source range for a method already begins at its Javadoc, so
+                    // includeJavadoc is a request to drop it, not to add it. The
+                    // previous code did the opposite - min() with the Javadoc offset,
+                    // which is inside the range it was compared against - so the flag
+                    // had never had any effect at all.
+                    ISourceRange javadocRange = method.getJavadocRange();
+                    if ( !includeJavadoc && javadocRange != null )
                     {
-                        ISourceRange javadocRange = method.getJavadocRange();
-                        if (javadocRange != null)
+                        // Start at the line after the Javadoc rather than at the
+                        // character after it: annotations sit between the two and are
+                        // part of the declaration.
+                        int javadocEndLine =
+                                doc.getLineOfOffset( javadocRange.getOffset() + javadocRange.getLength() - 1 );
+                        if ( javadocEndLine + 1 < doc.getNumberOfLines() )
                         {
-                            startOffset = Math.min(startOffset, javadocRange.getOffset());
+                            startOffset = Math.min( doc.getLineOffset( javadocEndLine + 1 ), endOffset );
                         }
                     }
 
-                    int startLine = doc.getLineOfOffset(startOffset) + 1;
-                    int endLine = doc.getLineOfOffset(endOffset - 1) + 1;
+                    // Lines come from the document's own line tracker, so a CRLF file
+                    // reports the same lines as an LF one.
+                    int startLine = doc.getLineOfOffset( startOffset ) + 1;
+                    int endLine = doc.getLineOfOffset( endOffset - 1 ) + 1;
 
-                    result.append("// ").append(type.getElementName()).append(".")
-                          .append(method.getElementName())
-                          .append(" (lines ").append(startLine).append("-").append(endLine).append(")\n");
+                    // Whole lines, indentation included. The range reports column 1,
+                    // and JDT's own offsets start at the '/' of the Javadoc or the
+                    // first modifier - so text taken from them verbatim would begin
+                    // mid-line and contradict the range that describes it.
+                    int from = doc.getLineOffset( startLine - 1 );
+                    int to = Math.min( source.length(),
+                            doc.getLineOffset( endLine - 1 ) + doc.getLineLength( endLine - 1 ) );
 
-                    for (int i = startLine - 1; i < endLine && i < lines.length; i++)
-                    {
-                        result.append(String.format("%" + width + "d\t%s\n", i + 1, lines[i]));
-                    }
-                    result.append("\n");
+                    found.add( new MethodSourceResponse.MethodSource(
+                            method.getElementName(),
+                            parameters,
+                            ContentRange.ofLines( doc, startLine, endLine ),
+                            source.substring( from, to ) ) );
                 }
 
-                if (found.isEmpty())
-                {
-                    return ResourceToolResult.transientResult(
-                            "Method(s) '" + methodNames + "' not found in " + fullyQualifiedClassName, toolName);
-                }
-
-                if (!notFound.isEmpty())
-                {
-                    result.append("// Not found: ").append(String.join(", ", notFound)).append("\n");
-                }
-
-                return ResourceToolResult.fromJavaType(type, result.toString(), toolName);
+                IFile file = resource instanceof IFile f ? f : null;
+                return MethodSourceResponse.of(
+                        fullyQualifiedClassName,
+                        file == null ? null : file.getProject().getName(),
+                        file == null ? null : file.getProjectRelativePath().toString(),
+                        ResourceVersion.of( file ),
+                        found,
+                        notFound );
             }
-            catch (Exception e)
+            catch ( Exception e )
             {
-                logger.error(e.getMessage(), e);
+                logger.error( e.getMessage(), e );
             }
         }
 
-        return ResourceToolResult.transientResult("Type not found: " + fullyQualifiedClassName, toolName);
+        return MethodSourceResponse.failed( fullyQualifiedClassName, Diagnostic.fatal(
+                DiagnosticCode.RESOURCE_NOT_FOUND,
+                "No open Java project resolves the type '" + fullyQualifiedClassName + "' to source." ) );
     }
 
     /**
-     * Returns source with optional import exclusion and selective method expansion.
-     * Methods not in the expand list are collapsed to signature + opening/closing braces.
-     * Line numbers always match the original file for accurate editing.
+     * Returns one file's source with the import block and the method bodies the caller
+     * did not ask for left out.
+     * <p>
+     * This is a single contiguous resource with holes in it, which is exactly what
+     * {@link ResourceReadResult} describes: the content is exact, and every omission
+     * is a range in {@code omittedRanges} rather than a {@code // ... (lines 40-91)}
+     * comment spliced into the code. A caller that wants an omitted region reads it
+     * with {@code readProjectResource(projectName, filePath, startLine, endLine)}.
      *
-     * @param methodNames comma-separated method names to expand; null/empty = expand all
+     * @param methodNames comma-separated method names to expand; null or empty expands
+     *            all of them, in which case only the imports can be omitted
      */
-    public ResourceToolResult getFilteredSource(String fullyQualifiedClassName,
-            boolean excludeImports, String methodNames)
+    public ResourceReadResult getFilteredSource( String fullyQualifiedClassName, boolean excludeImports,
+                                                 String methodNames )
     {
         final String toolName = "getFilteredSource";
 
-        Set<String> expandMethods = (methodNames != null && !methodNames.isBlank())
-                ? Arrays.stream(methodNames.split(","))
-                        .map(String::trim)
-                        .filter(s -> !s.isEmpty())
-                        .collect(Collectors.toSet())
+        Set<String> expandMethods = ( methodNames != null && !methodNames.isBlank() )
+                ? Arrays.stream( methodNames.split( "," ) )
+                        .map( String::trim )
+                        .filter( s -> !s.isEmpty() )
+                        .collect( Collectors.toSet() )
                 : Collections.emptySet();
         boolean expandAll = expandMethods.isEmpty();
 
-        for (IJavaProject javaProject : getAvailableJavaProjects())
+        for ( IJavaProject javaProject : getAvailableJavaProjects() )
         {
             try
             {
-                IType type = javaProject.findType(fullyQualifiedClassName);
-                if (type == null)
+                IType type = javaProject.findType( fullyQualifiedClassName );
+                if ( type == null )
+                {
                     continue;
+                }
 
                 ICompilationUnit cu = type.getCompilationUnit();
-                if (cu == null)
-                    continue;
-
-                if (cu.getResource() != null && aiIgnoreService.isExcluded(cu.getResource()))
+                if ( cu == null )
                 {
-                    return ResourceToolResult.transientResult(
-                            "Access denied: '" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore.", toolName);
+                    continue;
+                }
+
+                IResource resource = cu.getResource();
+                if ( resource != null && aiIgnoreService.isExcluded( resource ) )
+                {
+                    return ResourceReadResult.failed( projectNameOf( resource ), pathOf( resource ),
+                            Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE, "'"
+                                    + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore." ) );
                 }
 
                 String source = cu.getBuffer().getContents();
-                String[] lines = source.split("\n", -1);
-                Document doc = new Document(source);
-                int width = String.valueOf(lines.length).length();
+                String[] lines = source.split( "\n", -1 );
+                Document doc = new Document( source );
 
-                // Collapse ranges: startLine -> endLine (1-based, inclusive)
-                TreeMap<Integer, Integer> collapseRanges = new TreeMap<>();
+                // Omitted ranges: startLine -> endLine, 1-based and inclusive.
+                TreeMap<Integer, Integer> omit = new TreeMap<>();
 
-                if (excludeImports)
+                if ( excludeImports )
                 {
                     IImportContainer importContainer = cu.getImportContainer();
-                    if (importContainer != null && importContainer.exists())
+                    if ( importContainer != null && importContainer.exists() )
                     {
                         ISourceRange importRange = importContainer.getSourceRange();
-                        int importStart = doc.getLineOfOffset(importRange.getOffset()) + 1;
-                        int importEnd = doc.getLineOfOffset(
-                                importRange.getOffset() + importRange.getLength() - 1) + 1;
-                        collapseRanges.put(importStart, importEnd);
+                        omit.put( doc.getLineOfOffset( importRange.getOffset() ) + 1,
+                                  doc.getLineOfOffset( importRange.getOffset() + importRange.getLength() - 1 ) + 1 );
                     }
                 }
 
-                if (!expandAll)
+                if ( !expandAll )
                 {
-                    for (IMethod method : type.getMethods())
+                    for ( IMethod method : type.getMethods() )
                     {
-                        if (expandMethods.contains(method.getElementName()))
+                        if ( expandMethods.contains( method.getElementName() ) )
+                        {
                             continue;
+                        }
 
                         ISourceRange range = method.getSourceRange();
                         String methodSource = method.getSource();
-                        if (methodSource == null)
+                        if ( methodSource == null )
+                        {
                             continue;
+                        }
 
-                        int braceIndex = findOpeningBrace(methodSource);
-                        if (braceIndex < 0)
+                        int braceIndex = findOpeningBrace( methodSource );
+                        if ( braceIndex < 0 )
+                        {
                             continue;
+                        }
 
                         int methodStartOffset = range.getOffset();
-                        int braceLine = doc.getLineOfOffset(methodStartOffset + braceIndex) + 1;
-                        int methodEndLine = doc.getLineOfOffset(
-                                methodStartOffset + range.getLength() - 1) + 1;
+                        int braceLine = doc.getLineOfOffset( methodStartOffset + braceIndex ) + 1;
+                        int methodEndLine = doc.getLineOfOffset( methodStartOffset + range.getLength() - 1 ) + 1;
 
-                        // Collapse from line after opening brace to line before closing brace
+                        // The signature and both braces stay; only the body goes.
                         int bodyStart = braceLine + 1;
                         int bodyEnd = methodEndLine - 1;
 
-                        if (bodyStart <= bodyEnd)
+                        if ( bodyStart <= bodyEnd )
                         {
-                            collapseRanges.put(bodyStart, bodyEnd);
+                            omit.put( bodyStart, bodyEnd );
                         }
                     }
                 }
 
-                StringBuilder result = new StringBuilder();
+                StringBuilder content = new StringBuilder();
+                List<ContentRange> omittedRanges = new ArrayList<>();
                 int i = 0;
-
-                while (i < lines.length)
+                while ( i < lines.length )
                 {
-                    int lineNum = i + 1;
-
-                    var entry = collapseRanges.floorEntry(lineNum);
-                    if (entry != null && lineNum >= entry.getKey() && lineNum <= entry.getValue())
+                    int lineNumber = i + 1;
+                    var entry = omit.floorEntry( lineNumber );
+                    if ( entry != null && lineNumber >= entry.getKey() && lineNumber <= entry.getValue() )
                     {
-                        result.append(String.format("%" + width + "s\t    // ... (lines %d-%d)\n",
-                                "", entry.getKey(), entry.getValue()));
+                        if ( lineNumber == entry.getKey() )
+                        {
+                            omittedRanges.add( ContentRange.ofLines( doc, entry.getKey(), entry.getValue() ) );
+                        }
                         i = entry.getValue();
                         continue;
                     }
-
-                    result.append(String.format("%" + width + "d\t%s\n", lineNum, lines[i]));
+                    content.append( lines[i] ).append( "\n" );
                     i++;
                 }
 
-                return ResourceToolResult.fromJavaType(type, result.toString(), toolName);
+                int totalLines = lines.length;
+                IFile file = resource instanceof IFile f ? f : null;
+
+                return new ResourceReadResult(
+                        omittedRanges.isEmpty() ? ResourceReadResult.ReadStatus.OK
+                                                : ResourceReadResult.ReadStatus.PARTIAL,
+                        ResourceDescriptor.fromJavaType( type, toolName ).uri().toString(),
+                        projectNameOf( resource ),
+                        pathOf( resource ),
+                        "java",
+                        ResourceVersion.of( file ),
+                        new ContentRange( 1, 1, Math.max( 1, totalLines ), 1 ),
+                        totalLines,
+                        content.toString(),
+                        SourceOrigin.WORKSPACE_SOURCE,
+                        false,
+                        // Nothing was cut off the end: the content runs to the last
+                        // line, with holes. The holes are omittedRanges.
+                        false,
+                        omittedRanges,
+                        Diagnostic.none() );
             }
-            catch (Exception e)
+            catch ( Exception e )
             {
-                logger.error(e.getMessage(), e);
+                logger.error( e.getMessage(), e );
             }
         }
 
-        return ResourceToolResult.transientResult("Type not found: " + fullyQualifiedClassName, toolName);
+        return ResourceReadResult.failed( null, null, Diagnostic.fatal(
+                DiagnosticCode.RESOURCE_NOT_FOUND,
+                "No open Java project resolves the type '" + fullyQualifiedClassName + "' to source." ) );
     }
 
-    // --- Formatting helpers ---
-
-    private String formatClassDeclaration(IType type) throws JavaModelException
+    private static String projectNameOf( IResource resource )
     {
-        StringBuilder decl = new StringBuilder();
-
-        for (IAnnotation ann : type.getAnnotations())
-        {
-            decl.append("@").append(ann.getElementName()).append(" ");
-        }
-
-        int flags = type.getFlags();
-        if (type.isInterface())
-        {
-            flags &= ~Flags.AccAbstract;
-        }
-        String modifiers = Flags.toString(flags);
-        if (!modifiers.isEmpty())
-        {
-            decl.append(modifiers).append(" ");
-        }
-
-        if (type.isAnnotation())
-        {
-            decl.append("@interface ");
-        }
-        else if (type.isInterface())
-        {
-            decl.append("interface ");
-        }
-        else if (type.isEnum())
-        {
-            decl.append("enum ");
-        }
-        else if (type.isRecord())
-        {
-            decl.append("record ");
-        }
-        else
-        {
-            decl.append("class ");
-        }
-
-        decl.append(type.getElementName());
-
-        ITypeParameter[] typeParams = type.getTypeParameters();
-        if (typeParams.length > 0)
-        {
-            decl.append("<");
-            for (int i = 0; i < typeParams.length; i++)
-            {
-                if (i > 0)
-                    decl.append(", ");
-                decl.append(typeParams[i].getElementName());
-                String[] bounds = typeParams[i].getBounds();
-                if (bounds.length > 0)
-                {
-                    decl.append(" extends ").append(String.join(" & ", bounds));
-                }
-            }
-            decl.append(">");
-        }
-
-        String superclass = type.getSuperclassName();
-        if (superclass != null && !"Object".equals(superclass))
-        {
-            decl.append(" extends ").append(superclass);
-        }
-
-        String[] interfaces = type.getSuperInterfaceNames();
-        if (interfaces.length > 0)
-        {
-            decl.append(type.isInterface() ? " extends " : " implements ");
-            decl.append(String.join(", ", interfaces));
-        }
-
-        return decl.toString();
+        return resource == null ? null : resource.getProject().getName();
     }
 
-    private String formatFieldDeclaration(IField field) throws JavaModelException
+    private static String pathOf( IResource resource )
     {
-        if (field.isEnumConstant())
-        {
-            return field.getElementName();
-        }
-
-        StringBuilder decl = new StringBuilder();
-
-        for (IAnnotation ann : field.getAnnotations())
-        {
-            decl.append("@").append(ann.getElementName()).append(" ");
-        }
-
-        String modifiers = Flags.toString(field.getFlags());
-        if (!modifiers.isEmpty())
-        {
-            decl.append(modifiers).append(" ");
-        }
-
-        decl.append(Signature.toString(field.getTypeSignature()));
-        decl.append(" ").append(field.getElementName());
-
-        Object constantValue = field.getConstant();
-        if (constantValue != null)
-        {
-            if (constantValue instanceof String)
-            {
-                decl.append(" = \"").append(constantValue).append("\"");
-            }
-            else
-            {
-                decl.append(" = ").append(constantValue);
-            }
-        }
-
-        return decl.toString();
-    }
-
-    private String formatMethodSignature(IMethod method) throws JavaModelException
-    {
-        StringBuilder sig = new StringBuilder();
-
-        for (IAnnotation ann : method.getAnnotations())
-        {
-            sig.append("@").append(ann.getElementName()).append(" ");
-        }
-
-        String modifiers = Flags.toString(method.getFlags());
-        if (!modifiers.isEmpty())
-        {
-            sig.append(modifiers).append(" ");
-        }
-
-        if (!method.isConstructor())
-        {
-            sig.append(Signature.toString(method.getReturnType())).append(" ");
-        }
-
-        sig.append(method.getElementName());
-        sig.append("(").append(formatMethodParams(method)).append(")");
-
-        String[] exceptions = method.getExceptionTypes();
-        if (exceptions.length > 0)
-        {
-            sig.append(" throws ");
-            for (int i = 0; i < exceptions.length; i++)
-            {
-                if (i > 0)
-                    sig.append(", ");
-                sig.append(Signature.toString(exceptions[i]));
-            }
-        }
-
-        return sig.toString();
-    }
-
-    private String formatMethodParams(IMethod method) throws JavaModelException
-    {
-        StringBuilder params = new StringBuilder();
-        String[] paramTypes = method.getParameterTypes();
-        String[] paramNames = method.getParameterNames();
-
-        for (int i = 0; i < paramTypes.length; i++)
-        {
-            if (i > 0)
-                params.append(", ");
-            params.append(Signature.toString(paramTypes[i]));
-            if (i < paramNames.length)
-            {
-                params.append(" ").append(paramNames[i]);
-            }
-        }
-
-        return params.toString();
+        return resource == null ? null : resource.getProjectRelativePath().toString();
     }
 
     private int findOpeningBrace(String methodSource)

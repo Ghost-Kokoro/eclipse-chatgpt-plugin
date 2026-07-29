@@ -5,7 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -22,16 +22,34 @@ import org.eclipse.core.runtime.NullProgressMonitor;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationContext;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.CallHierarchyResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ClassOutlineResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.CompilationProblemsResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ImportSuggestionsResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.QuickFixResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ReferencesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeHierarchyResponse;
+import com.github.gradusnikov.eclipse.assistai.tools.LineOffsets;
 import org.eclipse.e4.core.di.annotations.Creatable;
+import org.eclipse.jdt.core.Flags;
+import org.eclipse.jdt.core.IAnnotation;
 import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IField;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaModelMarker;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMethod;
+import org.eclipse.jdt.core.ISourceRange;
 import org.eclipse.jdt.core.IType;
+import org.eclipse.jdt.core.ITypeParameter;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.Signature;
+import org.eclipse.jface.text.BadLocationException;
+import org.eclipse.jface.text.Document;
+import org.eclipse.jface.text.IDocument;
 import org.eclipse.jdt.internal.corext.callhierarchy.CallHierarchy;
 import org.eclipse.jdt.internal.corext.callhierarchy.MethodWrapper;
 import org.eclipse.jdt.ui.text.java.IJavaCompletionProposal;
@@ -59,323 +77,307 @@ public class CodeAnalysisService
     AiIgnoreService aiIgnoreService;
     
     /**
-     * Retrieves the call hierarchy for a specified method.
-     * 
-     * @param fullyQualifiedClassName The fully qualified name of the class containing the method
-     * @param methodName The name of the method to analyze
-     * @param methodSignature The signature of the method (optional)
-     * @param maxDepth Maximum depth of the call hierarchy to retrieve
-     * @return A formatted string containing the call hierarchy
+     * Who calls a method, and what it calls.
+     * <p>
+     * {@code MethodWrapper} holds the {@code IMethod}, so the project, the
+     * project-relative path and the line are all in hand; they used to be discarded for
+     * {@code cu.getElementName()}, a bare file name that no reading or editing tool
+     * accepts, which made every use of this tool cost a follow-up
+     * {@code findReferences} to learn where. A node reports the same location triple
+     * that tool does.
+     *
+     * @param methodSignature parameter type signatures, comma separated - optional, and
+     *            needed only to pick between overloads
+     * @param maxDepth how far to walk the callers; 3 when omitted
      */
     @SuppressWarnings("restriction")
-	public String getMethodCallHierarchy(String fullyQualifiedClassName, 
+	public CallHierarchyResponse getMethodCallHierarchy(String fullyQualifiedClassName,
                                   String methodName, 
                                   String methodSignature, 
                                   Integer maxDepth)
     {
-        if (maxDepth == null || maxDepth < 1) 
-        {
-            maxDepth = 3; // Default to 3 levels of depth
-        }
-        
-        StringBuilder result = new StringBuilder();
-        result.append("# Call Hierarchy for Method: ").append(methodName).append("\n\n");
-        
+        int depthLimit = (maxDepth == null || maxDepth < 1) ? 3 : maxDepth;
+        String target = fullyQualifiedClassName + "." + methodName;
+
         try 
         {
-            // Find the method in available Java projects
-            IMethod targetMethod = null;
-            
-            for (IJavaProject project : getAvailableJavaProjects()) 
+            IType type = findType(fullyQualifiedClassName);
+            if (type == null)
             {
-                IType type = project.findType(fullyQualifiedClassName);
-                if (type == null) 
-                {
-                    continue;
-                }
-                
-                // If method signature is provided, use it to find the exact method
-                if (methodSignature != null && !methodSignature.isEmpty()) 
-                {
-                    targetMethod = type.getMethod(methodName, methodSignature.split(","));
-                    if (targetMethod != null && targetMethod.exists()) 
-                    {
-                        break;
-                    }
-                } 
-                else 
-                {
-                    // Try to find the method without signature
-                    IMethod[] methods = type.getMethods();
-                    for (IMethod method : methods) {
-                        if (method.getElementName().equals(methodName)) 
-                        {
-                            targetMethod = method;
-                            break;
-                        }
-                    }
-                    if (targetMethod != null) 
-                    {
-                        break;
-                    }
-                }
+                return CallHierarchyResponse.failed(target, methodName, fullyQualifiedClassName, depthLimit,
+                        CallHierarchyResponse.Status.TYPE_NOT_FOUND,
+                        Diagnostic.fatal(DiagnosticCode.RESOURCE_NOT_FOUND, "Type '" + fullyQualifiedClassName
+                                + "' is not on the build path of any open Java project."));
             }
-            
-            if (targetMethod == null || !targetMethod.exists()) 
+
+            IMethod targetMethod = findMethod(type, methodName, methodSignature);
+            if (targetMethod == null)
             {
-                return "Method '" + methodName + "' not found in class '" + fullyQualifiedClassName + "'.";
+                return CallHierarchyResponse.failed(target, methodName, fullyQualifiedClassName, depthLimit,
+                        CallHierarchyResponse.Status.METHOD_NOT_FOUND,
+                        Diagnostic.fatal(DiagnosticCode.RESOURCE_NOT_FOUND, "Type '" + fullyQualifiedClassName
+                                + "' declares no method '" + methodName + "'"
+                                + (methodSignature == null || methodSignature.isBlank()
+                                        ? "." : " with signature '" + methodSignature + "'.")));
             }
-            
-            // Get the call hierarchy
+
+            List<Diagnostic> diagnostics = new ArrayList<>();
+            // One read per file rather than one per node: a wide hierarchy revisits the
+            // same compilation unit many times to resolve line numbers.
+            Map<IFile, String> sources = new LinkedHashMap<>();
+
             CallHierarchy callHierarchy = CallHierarchy.getDefault();
-            MethodWrapper[] callerRoots = callHierarchy.getCallerRoots(new IMethod[] {targetMethod});
-            
-            if (callerRoots == null || callerRoots.length == 0) 
-            {
-                result.append("No callers found for this method.\n");
-            }
-            else 
-            {
-                result.append("## Callers:\n\n");
-                collectCallHierarchy(callerRoots, 0, maxDepth, result);
-            }
-            
-            // Also get callees (methods called by this method)
-            MethodWrapper[] calleeRoots = callHierarchy.getCalleeRoots(new IMethod[] {targetMethod});
-            
-            if (calleeRoots != null && calleeRoots.length > 0) 
-            {
-                result.append("\n## Methods Called By ").append(methodName).append(":\n\n");
-                collectCalleeHierarchy(calleeRoots, 0, 1, result); // Only go one level deep for callees
-            }
-            
-            return result.toString();
-            
+
+            List<CallHierarchyResponse.CallNode> callers = new ArrayList<>();
+            collectCalls(callHierarchy.getCallerRoots(new IMethod[] { targetMethod }), 1, depthLimit,
+                    callers, diagnostics, sources);
+
+            // Callees stay one level deep: the question this tool answers is "who calls
+            // this", and a full callee walk is a different and much larger search.
+            List<CallHierarchyResponse.CallNode> callees = new ArrayList<>();
+            collectCalls(callHierarchy.getCalleeRoots(new IMethod[] { targetMethod }), 1, 1,
+                    callees, diagnostics, sources);
+
+            return CallHierarchyResponse.of(target, methodName, fullyQualifiedClassName, depthLimit,
+                    callers, callees, diagnostics);
         }
         catch (JavaModelException e) 
         {
             logger.error(e.getMessage(), e);
-            throw new RuntimeException( "Error retrieving call hierarchy: " + ExceptionUtils.getRootCauseMessage( e ) );
+            return CallHierarchyResponse.failed(target, methodName, fullyQualifiedClassName, depthLimit,
+                    CallHierarchyResponse.Status.FAILED,
+                    Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                            "Error retrieving call hierarchy: " + ExceptionUtils.getRootCauseMessage(e)));
         }
+    }
 
+    /**
+     * Resolves a method on a type, optionally narrowed by a comma-separated list of
+     * parameter type signatures.
+     */
+    private static IMethod findMethod(IType type, String methodName, String methodSignature)
+            throws JavaModelException
+    {
+        if (methodSignature != null && !methodSignature.isBlank())
+        {
+            IMethod method = type.getMethod(methodName, methodSignature.split(","));
+            return (method != null && method.exists()) ? method : null;
+        }
+        for (IMethod method : type.getMethods())
+        {
+            if (method.getElementName().equals(methodName))
+            {
+                return method;
+            }
+        }
+        return null;
     }
     
     /**
-     * Retrieves compilation errors and problems from the workspace or a specific project.
-     * 
-     * @param projectName The name of the project to check (optional)
-     * @param severity Filter by severity level: 'ERROR', 'WARNING', or 'ALL'
-     * @param maxResults Maximum number of problems to return
-     * @return A formatted string containing compilation errors
+     * Collects compilation problems from the workspace or a single project.
+     * <p>
+     * Collection only - the rendering is the record's JSON serialization, so how
+     * problems are described can change without changing which problems are reported.
+     *
+     * @param severity {@code ERROR}, {@code WARNING} or {@code ALL} (default)
+     * @param maxResults how many problems to list; the counts are of everything that
+     *            matched, so a truncated reply still answers "are there errors?"
      */
-    public String getCompilationErrors(String projectName, String severity, Integer maxResults)
+    public CompilationProblemsResponse getCompilationErrors( String projectName, String severity, Integer maxResults )
     {
-        try 
+        String requestedSeverity = ( severity == null || severity.isBlank() ) ? "ALL" : severity.toUpperCase();
+        int limit = ( maxResults == null || maxResults < 1 ) ? 50 : maxResults;
+
+        int severityFilter = switch ( requestedSeverity )
         {
-            // Set default values
-            if (severity == null || severity.isBlank())
-            {
-                severity = "ALL";
-            }
-            else 
-            {
-                severity = severity.toUpperCase();
-            }
-            
-            if (maxResults == null || maxResults < 1) 
-            {
-                maxResults = 50;
-            }
-            
-            // Define severity filter
-            int severityFilter = switch ( severity.toUpperCase() ) {
-                case "ERROR" -> IMarker.SEVERITY_ERROR;
-                case "WARNING" -> IMarker.SEVERITY_WARNING;
-                default -> -1;
-            };
-            
-            StringBuilder result = new StringBuilder();
-            result.append("# Compilation Problems\n\n");
-            
-            // Get markers from workspace or specific project
+            case "ERROR" -> IMarker.SEVERITY_ERROR;
+            case "WARNING" -> IMarker.SEVERITY_WARNING;
+            default -> -1;
+        };
+
+        try
+        {
+            String scope;
             IMarker[] markers;
-            if (projectName != null && !projectName.isBlank() ) 
+            if ( projectName != null && !projectName.isBlank() )
             {
-                IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-                if (project == null || !project.exists()) 
+                IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( projectName );
+                if ( project == null || !project.exists() )
                 {
                     throw new RuntimeException( "Project '" + projectName + "' not found." );
                 }
-                
-                if (!project.isOpen()) 
+                if ( !project.isOpen() )
                 {
                     throw new RuntimeException( "Project '" + projectName + "' is closed." );
                 }
-                
-                result.append("Project: ").append(projectName).append("\n\n");
-                markers = project.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
-            } 
-            else 
-            {
-                result.append("Scope: All Projects\n\n");
-                markers = ResourcesPlugin.getWorkspace().getRoot().findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
+                scope = "Project: " + projectName;
+                markers = project.findMarkers( IMarker.PROBLEM, true, IResource.DEPTH_INFINITE );
             }
-            
-            // Filter and sort markers
-            List<IMarker> filteredMarkers = new ArrayList<>();
-            for (IMarker marker : markers) 
+            else
             {
-                Integer severityValue = (Integer) marker.getAttribute(IMarker.SEVERITY);
-                if (severityFilter == -1 || (severityValue != null && severityValue.intValue() == severityFilter)) 
+                scope = "Scope: All Projects";
+                markers = ResourcesPlugin.getWorkspace().getRoot().findMarkers( IMarker.PROBLEM, true,
+                        IResource.DEPTH_INFINITE );
+            }
+
+            List<IMarker> matched = new ArrayList<>();
+            int errors = 0;
+            int warnings = 0;
+            int infos = 0;
+
+            for ( IMarker marker : markers )
+            {
+                Integer value = (Integer) marker.getAttribute( IMarker.SEVERITY );
+                if ( severityFilter != -1 && ( value == null || value.intValue() != severityFilter ) )
                 {
-                    filteredMarkers.add(marker);
+                    continue;
                 }
-            }
-            
-            // Sort by severity (errors first, then warnings)
-            filteredMarkers.sort((m1, m2) -> {
-                try {
-                    Integer sev1 = (Integer) m1.getAttribute(IMarker.SEVERITY);
-                    Integer sev2 = (Integer) m2.getAttribute(IMarker.SEVERITY);
-                    return sev2.compareTo(sev1); // Higher severity first
-                } catch (CoreException e) {
-                    return 0;
-                }
-            });
-            
-            // Limit the number of results
-            if (filteredMarkers.size() > maxResults) 
-            {
-                result.append("Showing ").append(maxResults).append(" of ").append(filteredMarkers.size())
-                      .append(" problems found.\n\n");
-                filteredMarkers = filteredMarkers.subList(0, maxResults);
-            }
-            else 
-            {
-                result.append("Found ").append(filteredMarkers.size()).append(" problems.\n\n");
-            }
-            
-            if (filteredMarkers.isEmpty()) 
-            {
-                result.append("No compilation problems found with the specified criteria.");
-                return result.toString();
-            }
-            
-            // Group by resource
-            Map<String, List<IMarker>> markersByResource = new HashMap<>();
-            for (IMarker marker : filteredMarkers) 
-            {
-                IResource resource = marker.getResource();
-                String resourcePath = resource.getFullPath().toString();
-                if (!markersByResource.containsKey(resourcePath)) 
+                matched.add( marker );
+                switch ( value == null ? -1 : value.intValue() )
                 {
-                    markersByResource.put(resourcePath, new ArrayList<>());
+                    case IMarker.SEVERITY_ERROR -> errors++;
+                    case IMarker.SEVERITY_WARNING -> warnings++;
+                    case IMarker.SEVERITY_INFO -> infos++;
+                    default -> { /* unknown severity is counted only in the total */ }
                 }
-                markersByResource.get(resourcePath).add(marker);
             }
-            
-            // Output problems grouped by resource
-            for (Map.Entry<String, List<IMarker>> entry : markersByResource.entrySet()) 
+
+            // Errors first: a caller reading a truncated list should see what blocks a
+            // build before it sees style warnings.
+            matched.sort( ( first, second ) -> Integer.compare(
+                    severityOf( second ), severityOf( first ) ) );
+
+            int total = matched.size();
+            boolean truncated = total > limit;
+            List<IMarker> listed = truncated ? matched.subList( 0, limit ) : matched;
+
+            // Linked, so files keep the errors-first order the sort established.
+            Map<IResource, List<CompilationProblemsResponse.Problem>> byResource = new LinkedHashMap<>();
+            for ( IMarker marker : listed )
             {
-                String resourcePath = entry.getKey();
-                List<IMarker> resourceMarkers = entry.getValue();
-                
-                result.append("## ").append(resourcePath).append("\n\n");
-                
-                for (IMarker marker : resourceMarkers) {
-                    Integer severityValue = (Integer) marker.getAttribute(IMarker.SEVERITY);
-                    String severityText;
-                    
-                    if (severityValue != null) {
-                        switch (severityValue.intValue()) {
-                            case IMarker.SEVERITY_ERROR:
-                                severityText = "ERROR";
-                                break;
-                            case IMarker.SEVERITY_WARNING:
-                                severityText = "WARNING";
-                                break;
-                            case IMarker.SEVERITY_INFO:
-                                severityText = "INFO";
-                                break;
-                            default:
-                                severityText = "UNKNOWN";
-                        }
-                    } else {
-                        severityText = "UNKNOWN";
-                    }
-                    
-                    // Get line number
-                    Integer lineNumber = (Integer) marker.getAttribute(IMarker.LINE_NUMBER);
-                    String lineStr = lineNumber != null ? "Line " + lineNumber : "Unknown location";
-                    
-                    // Get message
-                    String message = (String) marker.getAttribute(IMarker.MESSAGE);
-                    if (message == null) {
-                        message = "No message provided";
-                    }
-                    
-                    result.append("- **").append(severityText).append("** at ").append(lineStr).append(": ")
-                          .append(message).append("\n");
-                    
-                    // Emit the marker's unique ID so it can be referenced by executeQuickFix
-                    result.append("  - Marker ID: ").append(marker.getId()).append("\n");
-
-                    // Java-specific: emit internal problem ID
-                    if (marker.getType().equals(IJavaModelMarker.JAVA_MODEL_PROBLEM_MARKER)) 
-                    {
-                        var sourceId = marker.getAttribute(IJavaModelMarker.ID);
-                        if (sourceId != null) 
-                        {
-                            result.append("  - Problem ID: ").append(sourceId).append("\n");
-                        }
-                    }
-
-                    // Context snippet - any marker attached to an IFile with a line number
-                    if (lineNumber != null && marker.getResource() instanceof IFile ifile)
-                    {
-                        try 
-                        {
-                            String fileContent = readFileContent(ifile);
-                            String[] lines = fileContent.split("\n");
-                            
-                            if (lineNumber > 0 && lineNumber <= lines.length) 
-                            {
-                                int startLine = Math.max(1, lineNumber - 1);
-                                int endLine = Math.min(lines.length, lineNumber + 1);
-                                // Use a neutral fence (no language tag) for non-Java files
-                                String ext = ifile.getFileExtension();
-                                String lang = ext != null ? ext : "";
-                                result.append("  - Context:\n```").append(lang).append("\n");
-                                for (int i = startLine - 1; i < endLine; i++) 
-                                {
-                                    result.append(i == lineNumber - 1 ? "> " : "  ");
-                                    result.append(lines[i]).append("\n");
-                                }
-                                result.append("```\n");
-                            }
-                        } 
-                        catch (Exception e) 
-                        {
-                            // Skip context if we can't read the file
-                        }
-                    }
-
-                    appendQuickFixBlock(marker, result, "  ");
-                }
-                
-                result.append("\n");
+                byResource.computeIfAbsent( marker.getResource(), ignored -> new ArrayList<>() )
+                          .add( toProblem( marker ) );
             }
-            
-            return result.toString();
-            
+
+            List<CompilationProblemsResponse.FileProblems> files = new ArrayList<>();
+            for ( Map.Entry<IResource, List<CompilationProblemsResponse.Problem>> entry : byResource.entrySet() )
+            {
+                IResource resource = entry.getKey();
+                files.add( new CompilationProblemsResponse.FileProblems(
+                        resource.getProject() == null ? null : resource.getProject().getName(),
+                        resource.getProjectRelativePath().toString(),
+                        entry.getValue() ) );
+            }
+
+            String summary = truncated
+                    ? "Showing " + limit + " of " + total + " problems found."
+                    : "Found " + total + " problems.";
+
+            return new CompilationProblemsResponse( scope, total, errors, warnings, infos, files, truncated,
+                    summary );
         }
-        catch (CoreException e) 
+        catch ( CoreException e )
         {
-            logger.error(e.getMessage(), e);
-            throw new RuntimeException( "Error retrieving compilation problems: " + ExceptionUtils.getStackTrace(  e )  );
+            logger.error( e.getMessage(), e );
+            throw new RuntimeException( "Error retrieving compilation problems: " + ExceptionUtils.getStackTrace( e ) );
+        }
+    }
+
+    private static int severityOf( IMarker marker )
+    {
+        try
+        {
+            Integer value = (Integer) marker.getAttribute( IMarker.SEVERITY );
+            return value == null ? -1 : value.intValue();
+        }
+        catch ( CoreException e )
+        {
+            return -1;
+        }
+    }
+
+    /** Converts one marker, resolving its context snippet and quick fixes. */
+    private CompilationProblemsResponse.Problem toProblem( IMarker marker ) throws CoreException
+    {
+        Integer severityValue = (Integer) marker.getAttribute( IMarker.SEVERITY );
+        CompilationProblemsResponse.Severity severity = switch ( severityValue == null ? -1 : severityValue.intValue() )
+        {
+            case IMarker.SEVERITY_ERROR -> CompilationProblemsResponse.Severity.ERROR;
+            case IMarker.SEVERITY_WARNING -> CompilationProblemsResponse.Severity.WARNING;
+            case IMarker.SEVERITY_INFO -> CompilationProblemsResponse.Severity.INFO;
+            default -> CompilationProblemsResponse.Severity.UNKNOWN;
+        };
+
+        Integer lineNumber = (Integer) marker.getAttribute( IMarker.LINE_NUMBER );
+        String message = (String) marker.getAttribute( IMarker.MESSAGE );
+
+        Integer problemId = null;
+        if ( IJavaModelMarker.JAVA_MODEL_PROBLEM_MARKER.equals( marker.getType() ) )
+        {
+            Object sourceId = marker.getAttribute( IJavaModelMarker.ID );
+            if ( sourceId instanceof Integer id )
+            {
+                problemId = id;
+            }
         }
 
+        String snippet = null;
+        String language = null;
+        if ( lineNumber != null && marker.getResource() instanceof IFile file )
+        {
+            snippet = readContextSnippet( file, lineNumber );
+            language = file.getFileExtension();
+        }
+
+        List<CompilationProblemsResponse.QuickFixOption> fixes = new ArrayList<>();
+        try
+        {
+            fixes = toQuickFixOptions( collectQuickFixes( marker ) );
+        }
+        catch ( Exception e )
+        {
+            // Quick fix collection is best-effort: a problem is still worth reporting
+            // even when the IDE cannot suggest a repair for it.
+        }
+
+        return new CompilationProblemsResponse.Problem(
+                severity,
+                lineNumber == null ? -1 : lineNumber.intValue(),
+                message == null ? "No message provided" : message,
+                marker.getId(),
+                problemId,
+                snippet,
+                language,
+                fixes );
     }
+
+    /** The offending line and its neighbours, the offending one marked with "> ". */
+    private String readContextSnippet( IFile file, int lineNumber )
+    {
+        try
+        {
+            String[] lines = readFileContent( file ).split( "\n" );
+            if ( lineNumber < 1 || lineNumber > lines.length )
+            {
+                return null;
+            }
+            int start = Math.max( 1, lineNumber - 1 );
+            int end = Math.min( lines.length, lineNumber + 1 );
+
+            StringBuilder snippet = new StringBuilder();
+            for ( int i = start - 1; i < end; i++ )
+            {
+                snippet.append( i == lineNumber - 1 ? "> " : "  " ).append( lines[i] ).append( "\n" );
+            }
+            return snippet.toString();
+        }
+        catch ( Exception e )
+        {
+            // A problem whose file cannot be read is still a problem worth reporting.
+            return null;
+        }
+    }
+
     
     /**
      * Helper method to read file content
@@ -396,191 +398,458 @@ public class CodeAnalysisService
         }
     }    
     
-    @SuppressWarnings("restriction")
-	private void collectCallHierarchy(MethodWrapper[] callers, int level, int maxDepth, StringBuilder result) {
-       
-        if (level >= maxDepth) 
-        {
-            return;
-        }
-        
-        for (MethodWrapper caller : callers) 
-        {
-            IJavaElement member = caller.getMember();
-            if (member instanceof IMethod) {
-                IMethod method = (IMethod) member;
-                
-                // Indent based on level
-                for (int i = 0; i < level; i++) {
-                    result.append("  ");
-                }
-                
-                try {
-                    // Add the method with its declaring type
-                    result.append("- **").append(method.getElementName()).append("**");
-                    result.append(" in `").append(method.getDeclaringType().getFullyQualifiedName()).append("`");
-                    
-                    // Add method parameters for clarity
-                    String[] parameterTypes = method.getParameterTypes();
-                    if (parameterTypes.length > 0) {
-                        result.append(" (");
-                        for (int i = 0; i < parameterTypes.length; i++) {
-                            if (i > 0) {
-                                result.append(", ");
-                            }
-                            result.append(Signature.toString(parameterTypes[i]));
-                        }
-                        result.append(")");
-                    }
-                    
-                    // Add source location information
-                    ICompilationUnit cu = method.getCompilationUnit();
-                    if (cu != null) {
-                        result.append(" - ").append(cu.getElementName());
-                    }
-                    
-                    result.append("\n");
-                    
-                    // Recurse to next level
-                    MethodWrapper[] nestedCallers = caller.getCalls(new NullProgressMonitor());
-                    collectCallHierarchy(nestedCallers, level + 1, maxDepth, result);
-                    
-                } 
-                catch (Exception e) 
-                {
-                    logger.error(e.getMessage(), e);
-                    result.append(" [Error retrieving method details]\n");
-                }
-            }
-        }
-    }
-    
-    @SuppressWarnings("restriction")
-	private void collectCalleeHierarchy(MethodWrapper[] callees, int level, int maxDepth, StringBuilder result) {
-        if (level >= maxDepth) 
-        {
-            return;
-        }
-        
-        for (MethodWrapper callee : callees) {
-            IJavaElement member = callee.getMember();
-            if (member instanceof IMethod) {
-                IMethod method = (IMethod) member;
-                
-                // Indent based on level
-                for (int i = 0; i < level; i++) {
-                    result.append("  ");
-                }
-                
-                try {
-                    // Add the method with its declaring type
-                    result.append("- **").append(method.getElementName()).append("**");
-                    result.append(" in `").append(method.getDeclaringType().getFullyQualifiedName()).append("`");
-                    
-                    // Add method parameters for clarity
-                    String[] parameterTypes = method.getParameterTypes();
-                    if (parameterTypes.length > 0) {
-                        result.append(" (");
-                        for (int i = 0; i < parameterTypes.length; i++) {
-                            if (i > 0) {
-                                result.append(", ");
-                            }
-                            result.append(Signature.toString(parameterTypes[i]));
-                        }
-                        result.append(")");
-                    }
-                    
-                    result.append("\n");
-                    
-                    // Recurse to next level if needed
-                    if (level + 1 < maxDepth) {
-                        MethodWrapper[] nestedCallees = callee.getCalls(new NullProgressMonitor());
-                        collectCalleeHierarchy(nestedCallees, level + 1, maxDepth, result);
-                    }
-                    
-                } catch (Exception e) {
-                    logger.error(e.getMessage(), e);
-                    result.append(" [Error retrieving method details]\n");
-                }
-            }
-        }
-    }
-    
     /**
-     * Retrieves a list of all available Java projects in the current workspace.
-     * It filters out non-Java projects and only includes projects that are open and have the Java nature.
-     *
-     * @return A list of {@link IJavaProject} representing the available Java projects.
-     * @throws RuntimeException if an error occurs while accessing project information.
+     * Walks a wrapper's calls in pre-order, appending one node per method.
+     * <p>
+     * The roots JDT returns wrap the target method itself, so the walk starts from
+     * their calls: depth 1 is a direct caller or callee, which is what the parameter
+     * documentation has always promised.
+     * <p>
+     * Flat with a {@code depth} field rather than nested children - the schema
+     * generator stops at a self-referencing record, so nested levels would be
+     * advertised as objects of unspecified shape.
      */
-    /**
-     * Retrieves the type hierarchy (supertypes and subtypes) for a given type.
-     *
-     * @param fullyQualifiedClassName The fully qualified name of the class
-     * @return A formatted string showing the type hierarchy
-     */
-    public String getTypeHierarchy(String fullyQualifiedClassName)
+    @SuppressWarnings("restriction")
+	private void collectCalls(MethodWrapper[] parents, int depth, int maxDepth,
+	        List<CallHierarchyResponse.CallNode> out, List<Diagnostic> diagnostics, Map<IFile, String> sources)
     {
+        if (parents == null || depth > maxDepth)
+        {
+            return;
+        }
+
+        for (MethodWrapper parent : parents)
+        {
+            MethodWrapper[] calls;
+            try
+            {
+                calls = parent.getCalls(new NullProgressMonitor());
+            }
+            catch (Exception e)
+            {
+                logger.error(e.getMessage(), e);
+                // A level that could not be expanded is reported as a diagnostic rather
+                // than as "[Error retrieving method details]" spliced into the tree,
+                // where it read as part of the previous node.
+                diagnostics.add(Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                        "Could not expand the calls of " + parent.getName() + ": " + e.getMessage()));
+                continue;
+            }
+            if (calls == null)
+            {
+                continue;
+            }
+
+            for (MethodWrapper call : calls)
+            {
+                if (!(call.getMember() instanceof IMethod method))
+                {
+                    continue;
+                }
+                out.add(toCallNode(method, depth, diagnostics, sources));
+                collectCalls(new MethodWrapper[] { call }, depth + 1, maxDepth, out, diagnostics, sources);
+            }
+        }
+    }
+
+    /** One method in a call hierarchy, with the location triple the reading tools take. */
+    private CallHierarchyResponse.CallNode toCallNode(IMethod method, int depth, List<Diagnostic> diagnostics,
+            Map<IFile, String> sources)
+    {
+        String declaringType = null;
+        String signature = null;
+        String projectName = null;
+        String filePath = null;
+        int lineNumber = -1;
+
         try
         {
-            IType targetType = null;
-            for (IJavaProject project : getAvailableJavaProjects())
-            {
-                targetType = project.findType(fullyQualifiedClassName);
-                if (targetType != null) break;
-            }
-            if (targetType == null)
-            {
-                return "Type '" + fullyQualifiedClassName + "' not found.";
-            }
+            IType type = method.getDeclaringType();
+            declaringType = type == null ? null : type.getFullyQualifiedName();
+            signature = formatMethodParameters(method);
 
-            var result = new StringBuilder();
-            result.append("# Type Hierarchy for ").append(fullyQualifiedClassName).append("\n\n");
-
-            // Supertypes
-            result.append("## Supertypes:\n");
-            var hierarchy = targetType.newTypeHierarchy(new NullProgressMonitor());
-            IType[] supertypes = hierarchy.getAllSuperclasses(targetType);
-            for (int i = 0; i < supertypes.length; i++)
+            if (method.getResource() instanceof IFile file)
             {
-                for (int j = 0; j < i + 1; j++) result.append("  ");
-                result.append("- ").append(supertypes[i].getFullyQualifiedName()).append("\n");
-            }
+                projectName = file.getProject().getName();
+                filePath = file.getProjectRelativePath().toString();
 
-            // Interfaces
-            IType[] superInterfaces = hierarchy.getAllSuperInterfaces(targetType);
-            if (superInterfaces.length > 0)
-            {
-                result.append("\n## Implemented Interfaces:\n");
-                for (IType iface : superInterfaces)
+                ISourceRange nameRange = method.getNameRange();
+                if (nameRange != null && nameRange.getOffset() >= 0)
                 {
-                    result.append("- ").append(iface.getFullyQualifiedName()).append("\n");
+                    String source = sources.computeIfAbsent(file, this::readFileQuietly);
+                    if (source != null)
+                    {
+                        lineNumber = LineOffsets.lineInfoAt(source, nameRange.getOffset()).lineNumber();
+                    }
                 }
             }
-
-            // Subtypes
-            IType[] subtypes = hierarchy.getAllSubtypes(targetType);
-            if (subtypes.length > 0)
-            {
-                result.append("\n## Subtypes:\n");
-                for (IType subtype : subtypes)
-                {
-                    result.append("- ").append(subtype.getFullyQualifiedName()).append("\n");
-                }
-            }
-            else
-            {
-                result.append("\nNo subtypes found.\n");
-            }
-
-            return result.toString();
         }
         catch (Exception e)
         {
             logger.error(e.getMessage(), e);
-            return "Error retrieving type hierarchy: " + e.getMessage();
+            diagnostics.add(Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                    "Could not resolve details for " + method.getElementName() + ": " + e.getMessage()));
+        }
+
+        return new CallHierarchyResponse.CallNode(depth, method.getElementName(), declaringType, signature,
+                projectName, filePath, lineNumber);
+    }
+
+    /** File content for line resolution; a file that cannot be read costs a line number, not the node. */
+    private String readFileQuietly(IFile file)
+    {
+        try
+        {
+            return readFileContent(file);
+        }
+        catch (Exception e)
+        {
+            return null;
         }
     }
+    
+    /**
+     * Resolves a type name against the open Java projects.
+     *
+     * @return the first matching type, or null when no project knows the name
+     */
+    private IType findType( String fullyQualifiedClassName ) throws JavaModelException
+    {
+        for ( IJavaProject project : getAvailableJavaProjects() )
+        {
+            IType type = project.findType( fullyQualifiedClassName );
+            if ( type != null )
+            {
+                return type;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Retrieves the superclasses, implemented interfaces and subtypes of a type.
+     * <p>
+     * The three relations are kept apart rather than folded into one indented listing,
+     * and every type that is workspace source also reports where its file is, because
+     * the caller's next act is to open one of them.
+     *
+     * @param fullyQualifiedClassName The fully qualified name of the class
+     */
+    public TypeHierarchyResponse getTypeHierarchy( String fullyQualifiedClassName )
+    {
+        try
+        {
+            IType targetType = findType( fullyQualifiedClassName );
+            if ( targetType == null )
+            {
+                return TypeHierarchyResponse.notFound( fullyQualifiedClassName );
+            }
+
+            var hierarchy = targetType.newTypeHierarchy( new NullProgressMonitor() );
+
+            return TypeHierarchyResponse.of( fullyQualifiedClassName,
+                    toHierarchyTypes( hierarchy.getAllSuperclasses( targetType ) ),
+                    toHierarchyTypes( hierarchy.getAllSuperInterfaces( targetType ) ),
+                    toHierarchyTypes( hierarchy.getAllSubtypes( targetType ) ) );
+        }
+        catch ( Exception e )
+        {
+            logger.error( e.getMessage(), e );
+            throw new RuntimeException( "Error retrieving type hierarchy: " + e.getMessage(), e );
+        }
+    }
+
+    private static List<TypeHierarchyResponse.HierarchyType> toHierarchyTypes( IType[] types )
+    {
+        List<TypeHierarchyResponse.HierarchyType> hierarchyTypes = new ArrayList<>();
+        for ( IType type : types )
+        {
+            hierarchyTypes.add( toHierarchyType( type ) );
+        }
+        return hierarchyTypes;
+    }
+
+    /**
+     * A type from a JAR or the JRE has no compilation unit, so it reports no location -
+     * which is how a caller tells "I can open and edit this" from "I cannot".
+     */
+    private static TypeHierarchyResponse.HierarchyType toHierarchyType( IType type )
+    {
+        ICompilationUnit unit = type.getCompilationUnit();
+        if ( unit != null && unit.getResource() instanceof IFile file )
+        {
+            return new TypeHierarchyResponse.HierarchyType( type.getFullyQualifiedName(),
+                    file.getProject().getName(), file.getProjectRelativePath().toString() );
+        }
+        return new TypeHierarchyResponse.HierarchyType( type.getFullyQualifiedName(), null, null );
+    }
+
+    /**
+     * Returns the outline of a type: its declaration plus fields, method signatures and
+     * inner types, each with the line range needed to read it.
+     * <p>
+     * The line range is the point of the call. A caller reads an outline to choose one
+     * member and then fetch it, so an entry that named a member without saying where it
+     * ends left that caller guessing its extent from the start of the next one.
+     *
+     * @param fullyQualifiedClassName the type to outline
+     * @param includeFields whether field declarations are listed
+     */
+    public ClassOutlineResponse getClassOutline( String fullyQualifiedClassName, boolean includeFields )
+    {
+        try
+        {
+            IType type = findType( fullyQualifiedClassName );
+            if ( type == null )
+            {
+                return ClassOutlineResponse.failed( fullyQualifiedClassName, ClassOutlineResponse.Status.TYPE_NOT_FOUND,
+                        "Type '" + fullyQualifiedClassName + "' was not found in any open Java project." );
+            }
+
+            ICompilationUnit unit = type.getCompilationUnit();
+            if ( unit == null )
+            {
+                return ClassOutlineResponse.failed( fullyQualifiedClassName, ClassOutlineResponse.Status.NO_SOURCE,
+                        "Type '" + fullyQualifiedClassName + "' has no attached source. Use getSource, which decompiles." );
+            }
+
+            IResource resource = unit.getResource();
+            if ( resource != null && aiIgnoreService.isExcluded( resource ) )
+            {
+                return ClassOutlineResponse.failed( fullyQualifiedClassName, ClassOutlineResponse.Status.ACCESS_DENIED,
+                        "Type '" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore." );
+            }
+
+            // The platform's line tracker, so a CRLF file reports the same lines as an LF one.
+            IDocument document = new Document( unit.getBuffer().getContents() );
+
+            List<ClassOutlineResponse.Member> fields = new ArrayList<>();
+            if ( includeFields )
+            {
+                for ( IField field : type.getFields() )
+                {
+                    fields.add( toMember( document, field.getElementName(), formatFieldDeclaration( field ),
+                            field.getSourceRange() ) );
+                }
+            }
+
+            List<ClassOutlineResponse.Member> methods = new ArrayList<>();
+            for ( IMethod method : type.getMethods() )
+            {
+                methods.add( toMember( document, method.getElementName(), formatMethodSignature( method ),
+                        method.getSourceRange() ) );
+            }
+
+            List<ClassOutlineResponse.Member> innerTypes = new ArrayList<>();
+            for ( IType innerType : type.getTypes() )
+            {
+                innerTypes.add( toMember( document, innerType.getElementName(), formatTypeDeclaration( innerType ),
+                        innerType.getSourceRange() ) );
+            }
+
+            ClassOutlineResponse.Member declaration = toMember( document, type.getElementName(),
+                    formatTypeDeclaration( type ), type.getSourceRange() );
+
+            return ClassOutlineResponse.of( fullyQualifiedClassName,
+                    resource == null ? null : resource.getProject().getName(),
+                    resource == null ? null : resource.getProjectRelativePath().toString(),
+                    declaration, fields, methods, innerTypes );
+        }
+        catch ( Exception e )
+        {
+            logger.error( e.getMessage(), e );
+            throw new RuntimeException( "Error building the outline of '" + fullyQualifiedClassName + "': "
+                    + e.getMessage(), e );
+        }
+    }
+
+    /** Both line numbers are 1-based and inclusive, as the reading tools take them. */
+    private static ClassOutlineResponse.Member toMember( IDocument document, String name, String label,
+            ISourceRange range ) throws BadLocationException
+    {
+        int startLine = document.getLineOfOffset( range.getOffset() ) + 1;
+        int endLine = document.getLineOfOffset( range.getOffset() + Math.max( range.getLength() - 1, 0 ) ) + 1;
+        return new ClassOutlineResponse.Member( name, label, startLine, endLine );
+    }
+
+    private static String formatTypeDeclaration( IType type ) throws JavaModelException
+    {
+        StringBuilder declaration = new StringBuilder();
+        appendAnnotations( declaration, type.getAnnotations() );
+
+        int flags = type.getFlags();
+        if ( type.isInterface() )
+        {
+            // JDT reports every interface as abstract; printing it back adds nothing.
+            flags &= ~Flags.AccAbstract;
+        }
+        appendModifiers( declaration, flags );
+
+        if ( type.isAnnotation() )
+        {
+            declaration.append( "@interface " );
+        }
+        else if ( type.isInterface() )
+        {
+            declaration.append( "interface " );
+        }
+        else if ( type.isEnum() )
+        {
+            declaration.append( "enum " );
+        }
+        else if ( type.isRecord() )
+        {
+            declaration.append( "record " );
+        }
+        else
+        {
+            declaration.append( "class " );
+        }
+        declaration.append( type.getElementName() );
+
+        ITypeParameter[] typeParameters = type.getTypeParameters();
+        if ( typeParameters.length > 0 )
+        {
+            declaration.append( "<" );
+            for ( int i = 0; i < typeParameters.length; i++ )
+            {
+                if ( i > 0 )
+                {
+                    declaration.append( ", " );
+                }
+                declaration.append( typeParameters[i].getElementName() );
+                String[] bounds = typeParameters[i].getBounds();
+                if ( bounds.length > 0 )
+                {
+                    declaration.append( " extends " ).append( String.join( " & ", bounds ) );
+                }
+            }
+            declaration.append( ">" );
+        }
+
+        String superclass = type.getSuperclassName();
+        if ( superclass != null && !"Object".equals( superclass ) )
+        {
+            declaration.append( " extends " ).append( superclass );
+        }
+
+        String[] interfaces = type.getSuperInterfaceNames();
+        if ( interfaces.length > 0 )
+        {
+            declaration.append( type.isInterface() ? " extends " : " implements " );
+            declaration.append( String.join( ", ", interfaces ) );
+        }
+
+        return declaration.toString();
+    }
+
+    private static String formatFieldDeclaration( IField field ) throws JavaModelException
+    {
+        if ( field.isEnumConstant() )
+        {
+            return field.getElementName();
+        }
+
+        StringBuilder declaration = new StringBuilder();
+        appendAnnotations( declaration, field.getAnnotations() );
+        appendModifiers( declaration, field.getFlags() );
+
+        declaration.append( Signature.toString( field.getTypeSignature() ) );
+        declaration.append( " " ).append( field.getElementName() );
+
+        Object constant = field.getConstant();
+        if ( constant instanceof String text )
+        {
+            declaration.append( " = \"" ).append( text ).append( "\"" );
+        }
+        else if ( constant != null )
+        {
+            declaration.append( " = " ).append( constant );
+        }
+
+        return declaration.toString();
+    }
+
+    private static String formatMethodSignature( IMethod method ) throws JavaModelException
+    {
+        StringBuilder signature = new StringBuilder();
+        appendAnnotations( signature, method.getAnnotations() );
+        appendModifiers( signature, method.getFlags() );
+
+        if ( !method.isConstructor() )
+        {
+            signature.append( Signature.toString( method.getReturnType() ) ).append( " " );
+        }
+
+        signature.append( method.getElementName() );
+        signature.append( "(" ).append( formatMethodParameters( method ) ).append( ")" );
+
+        String[] exceptions = method.getExceptionTypes();
+        if ( exceptions.length > 0 )
+        {
+            signature.append( " throws " );
+            for ( int i = 0; i < exceptions.length; i++ )
+            {
+                if ( i > 0 )
+                {
+                    signature.append( ", " );
+                }
+                signature.append( Signature.toString( exceptions[i] ) );
+            }
+        }
+
+        return signature.toString();
+    }
+
+    /**
+     * A method's parameter list as it reads in source - {@code String name, int count} -
+     * without the enclosing parentheses.
+     * <p>
+     * Package-visible because {@link OutlineService} matches a caller's
+     * {@code methodSignature} filter against exactly this rendering. It used to keep its
+     * own copy, so an overload picked by {@code getMethodSource} and the same overload
+     * listed by {@code getClassOutline} were formatted by two separate pieces of code
+     * that only happened to agree.
+     */
+    static String formatMethodParameters( IMethod method ) throws JavaModelException
+    {
+        StringBuilder parameters = new StringBuilder();
+
+        String[] parameterTypes = method.getParameterTypes();
+        String[] parameterNames = method.getParameterNames();
+        for ( int i = 0; i < parameterTypes.length; i++ )
+        {
+            if ( i > 0 )
+            {
+                parameters.append( ", " );
+            }
+            parameters.append( Signature.toString( parameterTypes[i] ) );
+            if ( i < parameterNames.length )
+            {
+                parameters.append( " " ).append( parameterNames[i] );
+            }
+        }
+
+        return parameters.toString();
+    }
+
+    private static void appendAnnotations( StringBuilder target, IAnnotation[] annotations )
+    {
+        for ( IAnnotation annotation : annotations )
+        {
+            target.append( "@" ).append( annotation.getElementName() ).append( " " );
+        }
+    }
+
+    private static void appendModifiers( StringBuilder target, int flags )
+    {
+        String modifiers = Flags.toString( flags );
+        if ( !modifiers.isEmpty() )
+        {
+            target.append( modifiers ).append( " " );
+        }
+    }
+
 
     /**
      * Finds all references to a Java element (type, method, or field) across the workspace.
@@ -589,19 +858,17 @@ public class CodeAnalysisService
      * @param elementName Optional method or field name within the class (null to search for the class itself)
      * @return A formatted string listing all references
      */
-    public String findReferences(String fullyQualifiedClassName, String elementName)
+    public ReferencesResponse findReferences(String fullyQualifiedClassName, String elementName)
     {
+        String label = ( elementName != null && !elementName.isBlank() )
+                ? fullyQualifiedClassName + "." + elementName
+                : fullyQualifiedClassName;
         try
         {
-            IType targetType = null;
-            for (IJavaProject project : getAvailableJavaProjects())
-            {
-                targetType = project.findType(fullyQualifiedClassName);
-                if (targetType != null) break;
-            }
+            IType targetType = findType(fullyQualifiedClassName);
             if (targetType == null)
             {
-                return "Type '" + fullyQualifiedClassName + "' not found.";
+                throw new RuntimeException("Type '" + fullyQualifiedClassName + "' not found.");
             }
 
             IJavaElement searchElement;
@@ -628,7 +895,8 @@ public class CodeAnalysisService
                 }
                 if (found == null)
                 {
-                    return "Element '" + elementName + "' not found in '" + fullyQualifiedClassName + "'.";
+                    throw new RuntimeException("Element '" + elementName + "' not found in '"
+                            + fullyQualifiedClassName + "'.");
                 }
                 searchElement = found;
             }
@@ -644,35 +912,42 @@ public class CodeAnalysisService
                     org.eclipse.jdt.core.search.IJavaSearchConstants.REFERENCES);
             var scope = org.eclipse.jdt.core.search.SearchEngine.createWorkspaceScope();
 
-            var references = new ArrayList<String>();
+            var references = new ArrayList<ReferencesResponse.Reference>();
             var requestor = new org.eclipse.jdt.core.search.SearchRequestor()
             {
                 @Override
                 public void acceptSearchMatch(org.eclipse.jdt.core.search.SearchMatch match)
                 {
-                    var element = match.getElement();
-                    if (element instanceof IJavaElement)
+                    if (!(match.getElement() instanceof IJavaElement javaElement))
                     {
-                        var javaElement = (IJavaElement) element;
-                        var resource = match.getResource();
-                        String location = resource != null ? resource.getFullPath().toString() : "unknown";
-                        int line = -1;
+                        return;
+                    }
+                    var resource = match.getResource();
+
+                    int line = -1;
+                    String lineContent = null;
+                    if (resource instanceof IFile file)
+                    {
                         try
                         {
-                            if (resource instanceof IFile)
-                            {
-                                var file = (IFile) resource;
-                                String content = readFileContent(file);
-                                int offset = match.getOffset();
-                                line = content.substring(0, Math.min(offset, content.length())).split("\n").length;
-                            }
+                            // The platform's line tracker, so a CRLF file reports the
+                            // same line as an LF one.
+                            var info = LineOffsets.lineInfoAt(readFileContent(file), match.getOffset());
+                            line = info.lineNumber();
+                            lineContent = info.lineContent();
                         }
-                        catch (Exception e) { /* ignore */ }
-
-                        String ref = location + (line > 0 ? ":" + line : "") +
-                                " in " + javaElement.getElementName();
-                        references.add(ref);
+                        catch (Exception e)
+                        {
+                            // A reference whose file cannot be read is still a reference.
+                        }
                     }
+
+                    references.add(new ReferencesResponse.Reference(
+                            resource == null || resource.getProject() == null ? null : resource.getProject().getName(),
+                            resource == null ? null : resource.getProjectRelativePath().toString(),
+                            line,
+                            javaElement.getElementName(),
+                            lineContent));
                 }
             };
 
@@ -680,63 +955,16 @@ public class CodeAnalysisService
                     new org.eclipse.jdt.core.search.SearchParticipant[] { org.eclipse.jdt.core.search.SearchEngine.getDefaultSearchParticipant() },
                     scope, requestor, new NullProgressMonitor());
 
-            var result = new StringBuilder();
-            String label = elementName != null ? fullyQualifiedClassName + "." + elementName : fullyQualifiedClassName;
-            result.append("# References to ").append(label).append("\n\n");
-            result.append("Found ").append(references.size()).append(" reference(s).\n\n");
-
-            for (String ref : references)
-            {
-                result.append("- ").append(ref).append("\n");
-            }
-
-            return result.toString();
+            return ReferencesResponse.of(label, references, false);
+        }
+        catch (RuntimeException e)
+        {
+            throw e;
         }
         catch (Exception e)
         {
             logger.error(e.getMessage(), e);
-            return "Error finding references: " + e.getMessage();
-        }
-    }
-
-
-    /**
-     * Appends a quick-fix block for {@code marker} to {@code sb}.
-     * Produces numbered proposals with descriptions and a hint to the LLM to
-     * call {@code executeQuickFix} with the chosen index.
-     * Best-effort - any exception is silently swallowed.
-     *
-     * @param marker the problem marker
-     * @param sb     the builder to append to
-     * @param indent line prefix (e.g. {@code "  "} for two-space indent)
-     */
-    private void appendQuickFixBlock(IMarker marker, StringBuilder sb, String indent)
-    {
-        try
-        {
-            List<QuickFix> fixes = collectQuickFixes(marker);
-            if (fixes.isEmpty())
-            {
-                sb.append(indent).append("- Quick fixes: none available\n");
-            }
-            else
-            {
-                sb.append(indent).append("- Quick fixes (pass index to executeQuickFix):\n");
-                for (int i = 0; i < fixes.size(); i++)
-                {
-                    QuickFix fix = fixes.get(i);
-                    sb.append(indent).append("    - [").append(i).append("] ").append(fix.label());
-                    if (fix.description() != null && !fix.description().isBlank())
-                    {
-                        sb.append(" \u2013 ").append(fix.description());
-                    }
-                    sb.append("\n");
-                }
-            }
-        }
-        catch (Exception e)
-        {
-            // quick fix collection is best-effort; skip silently
+            throw new RuntimeException("Error finding references: " + e.getMessage(), e);
         }
     }
 
@@ -751,64 +979,96 @@ public class CodeAnalysisService
     }
 
     /**
-     * Executes a specific quick fix proposal for a problem marker.
+     * Applies one quick fix proposal to one problem marker.
+     * <p>
+     * The failures are the point. {@code getCompilationErrors} already hands back a
+     * typed {@code markerId} and quick-fix indices so that fix-and-recheck is
+     * mechanical, and this used to end the loop in six English sentences sharing an
+     * {@code "Error"} prefix - one of which,
+     * {@code "Error applying quick fix: …"}, reads as success to anything skimming for
+     * the word "applied". Each recoverable condition is now a
+     * {@link QuickFixResponse.Status}, because each needs a different next move.
      *
-     * @param markerId      The marker ID as returned by getCompilationErrors or getQuickFixes
-     * @param proposalIndex The index of the proposal to apply (0-based, from the quick fixes list)
-     * @return Result message indicating success or failure
+     * @param markerId the id reported by {@code getCompilationErrors}
+     * @param proposalIndex the 0-based index of a {@code quickFixes} entry
      */
-    public String executeQuickFix(long markerId, int proposalIndex)
+    public QuickFixResponse executeQuickFix(long markerId, int proposalIndex)
     {
-        try
+        IMarker marker = findMarkerById(markerId);
+        if (marker == null)
         {
-            IMarker marker = findMarkerById(markerId);
+            return QuickFixResponse.markerNotFound(markerId, proposalIndex);
+        }
+
+        Object lock = (marker.getResource() instanceof IFile file)
+            ? fileLocks.computeIfAbsent(file.getFullPath(), k -> new Object())
+            : new Object();
+
+        synchronized (lock)
+        {
+            marker = findMarkerById(markerId);
             if (marker == null)
             {
-                return "Error: Marker with ID " + markerId + " not found. It may have been resolved already.";
+                return QuickFixResponse.markerNotFound(markerId, proposalIndex);
             }
 
-            Object lock = (marker.getResource() instanceof IFile file)
-                ? fileLocks.computeIfAbsent(file.getFullPath(), k -> new Object())
-                : new Object();
+            IResource resource = marker.getResource();
+            String projectName = (resource == null || resource.getProject() == null)
+                    ? null : resource.getProject().getName();
+            String filePath = resource == null ? null : resource.getProjectRelativePath().toString();
 
-            synchronized (lock)
+            List<QuickFix> fixes = collectQuickFixes(marker);
+            List<CompilationProblemsResponse.QuickFixOption> available = toQuickFixOptions(fixes);
+
+            if (fixes.isEmpty())
             {
-                marker = findMarkerById(markerId);
-                if (marker == null)
-                {
-                    return "Error: Marker with ID " + markerId + " not found. It may have been resolved already.";
-                }
+                return QuickFixResponse.noProposals(markerId, projectName, filePath, proposalIndex);
+            }
+            if (proposalIndex < 0 || proposalIndex >= fixes.size())
+            {
+                return QuickFixResponse.invalidProposalIndex(markerId, projectName, filePath, proposalIndex,
+                        available);
+            }
 
-                List<QuickFix> fixes = collectQuickFixes(marker);
-                if (fixes.isEmpty())
-                {
-                    return "Error: No quick fix proposals available for marker " + markerId + ".";
-                }
-                if (proposalIndex < 0 || proposalIndex >= fixes.size())
-                {
-                    return "Error: Proposal index " + proposalIndex + " is out of range (0-" + (fixes.size() - 1) + ").";
-                }
-
-                QuickFix fix = fixes.get(proposalIndex);
+            QuickFix fix = fixes.get(proposalIndex);
+            try
+            {
                 fix.apply(marker);
 
-                if (marker.getResource() instanceof IFile f)
+                if (resource instanceof IFile file)
                 {
-                    saveFileBuffer(f);
-                    f.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
+                    saveFileBuffer(file);
+                    file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
                 }
 
                 waitForAutoBuild();
-
-                String status = marker.exists() ? "applied (marker still present)" : "applied and marker resolved";
-                return "Quick fix applied: \"" + fix.label() + "\" on marker " + markerId + " - " + status;
             }
+            catch (Exception e)
+            {
+                logger.error(e.getMessage(), e);
+                return QuickFixResponse.applyFailed(markerId, projectName, filePath, proposalIndex, fix.label(),
+                        available, Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                                "Applying '" + fix.label() + "' failed: " + e.getMessage()
+                                        + ". Re-read the file; part of the change may have been written."));
+            }
+
+            // Whether the problem actually went away, as a field. It was the
+            // parenthetical in "applied (marker still present)".
+            return QuickFixResponse.applied(markerId, projectName, filePath, proposalIndex, fix.label(),
+                    !marker.exists(), available);
         }
-        catch (Exception e)
+    }
+
+    /** The proposals as the caller already sees them on a {@code getCompilationErrors} problem. */
+    private static List<CompilationProblemsResponse.QuickFixOption> toQuickFixOptions(List<QuickFix> fixes)
+    {
+        List<CompilationProblemsResponse.QuickFixOption> options = new ArrayList<>();
+        for (int i = 0; i < fixes.size(); i++)
         {
-            logger.error(e.getMessage(), e);
-            return "Error applying quick fix: " + e.getMessage();
+            options.add(new CompilationProblemsResponse.QuickFixOption(
+                    i, fixes.get(i).label(), fixes.get(i).description()));
         }
+        return options;
     }
 
     /**
@@ -919,7 +1179,7 @@ public class CodeAnalysisService
                 }
                 String charset = file.getCharset();
                 byte[] bytes = doc.get().getBytes(java.nio.charset.Charset.forName(charset));
-                file.setContents(new java.io.ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+                file.setContents(new java.io.ByteArrayInputStream(bytes), IResource.FORCE | IResource.KEEP_HISTORY, new NullProgressMonitor());
                 return;
             }
 
@@ -935,7 +1195,7 @@ public class CodeAnalysisService
                 proposal.apply(doc);
                 String charset = file.getCharset();
                 byte[] bytes = doc.get().getBytes(java.nio.charset.Charset.forName(charset));
-                file.setContents(new java.io.ByteArrayInputStream(bytes), IResource.FORCE, new NullProgressMonitor());
+                file.setContents(new java.io.ByteArrayInputStream(bytes), IResource.FORCE | IResource.KEEP_HISTORY, new NullProgressMonitor());
             }
             finally
             {
@@ -1065,38 +1325,52 @@ public class CodeAnalysisService
 
 
     /**
-     * Gets import suggestions for unresolved types in a compilation unit.
-     *
-     * @param projectName The project name
-     * @param filePath The file path relative to the project
-     * @return A formatted string listing import suggestions
+     * Candidate types for the unresolved names in a Java file.
+     * <p>
+     * The answer is the fully qualified name, and it used to be wrapped in backticks
+     * inside an {@code import …;} statement inside a two-space bullet - four
+     * decorations to strip before it could be used. It is now a bare string in
+     * {@code candidates}.
+     * <p>
+     * "No such project", "the project is closed", "no such file", "no unresolved types"
+     * and "no candidates for this type" were five sentences that a caller could only
+     * tell apart by reading them, and the first two were the same sentence. Each is a
+     * status or a count.
      */
-    public String getImportSuggestions(String projectName, String filePath)
+    public ImportSuggestionsResponse getImportSuggestions(String projectName, String filePath)
     {
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
+        if (!project.exists())
+        {
+            return ImportSuggestionsResponse.failed(projectName, filePath,
+                    ImportSuggestionsResponse.Status.PROJECT_NOT_FOUND,
+                    Diagnostic.fatal(DiagnosticCode.PROJECT_NOT_FOUND,
+                            "No project named '" + projectName + "' exists in the workspace."));
+        }
+        // Distinct from the above: a closed project is one openProject call away, and
+        // conflating the two sent a caller looking for a typo it had not made.
+        if (!project.isOpen())
+        {
+            return ImportSuggestionsResponse.failed(projectName, filePath,
+                    ImportSuggestionsResponse.Status.PROJECT_CLOSED,
+                    Diagnostic.fatal(DiagnosticCode.RESOURCE_NOT_ACCESSIBLE,
+                            "Project '" + projectName + "' is closed. Open it and try again."));
+        }
+
+        IFile file = project.getFile(filePath);
+        if (!file.exists())
+        {
+            return ImportSuggestionsResponse.failed(projectName, filePath,
+                    ImportSuggestionsResponse.Status.FILE_NOT_FOUND,
+                    Diagnostic.fatal(DiagnosticCode.RESOURCE_NOT_FOUND,
+                            "File '" + filePath + "' does not exist in project '" + projectName + "'."));
+        }
+
         try
         {
-            IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-            if (!project.exists() || !project.isOpen())
-            {
-                return "Error: Project '" + projectName + "' not found or not open.";
-            }
+            List<ImportSuggestionsResponse.UnresolvedType> unresolved = new ArrayList<>();
 
-            IFile file = project.getFile(filePath);
-            if (!file.exists())
-            {
-                return "Error: File '" + filePath + "' not found.";
-            }
-
-            // Get problem markers that indicate unresolved types
-            IMarker[] markers = file.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO);
-
-            var result = new StringBuilder();
-            result.append("# Import Suggestions for ").append(filePath).append("\n\n");
-
-            JavaCore.create(project);
-            int suggestionCount = 0;
-
-            for (IMarker marker : markers)
+            for (IMarker marker : file.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO))
             {
                 String message = (String) marker.getAttribute(IMarker.MESSAGE);
                 Integer severity = (Integer) marker.getAttribute(IMarker.SEVERITY);
@@ -1105,75 +1379,68 @@ public class CodeAnalysisService
                 {
                     continue;
                 }
-
-                // Check if this is an unresolved type error
-                if (message.contains("cannot be resolved to a type") || message.contains("cannot be resolved"))
+                if (!message.contains("cannot be resolved"))
                 {
-                    // Extract the unresolved type name from the error message
-                    String unresolvedType = message.split(" ")[0].replace("\"", "");
-                    Integer line = (Integer) marker.getAttribute(IMarker.LINE_NUMBER);
-
-                    result.append("## Unresolved: `").append(unresolvedType).append("`");
-                    if (line != null) result.append(" (line ").append(line).append(")");
-                    result.append("\n");
-
-                    // Search for matching types in the workspace
-                    var searchEngine = new org.eclipse.jdt.core.search.SearchEngine();
-                    var matches = new ArrayList<String>();
-
-                    try
-                    {
-                        searchEngine.searchAllTypeNames(
-                                null, // any package
-                                org.eclipse.jdt.core.search.SearchPattern.R_EXACT_MATCH,
-                                unresolvedType.toCharArray(),
-                                org.eclipse.jdt.core.search.SearchPattern.R_EXACT_MATCH,
-                                org.eclipse.jdt.core.search.IJavaSearchConstants.TYPE,
-                                org.eclipse.jdt.core.search.SearchEngine.createWorkspaceScope(),
-                                new org.eclipse.jdt.core.search.TypeNameRequestor()
-                                {
-                                    @Override
-                                    public void acceptType(int modifiers, char[] packageName, char[] simpleTypeName,
-                                            char[][] enclosingTypeNames, String path)
-                                    {
-                                        String fqn = new String(packageName) + "." + new String(simpleTypeName);
-                                        matches.add(fqn);
-                                    }
-                                },
-                                org.eclipse.jdt.core.search.IJavaSearchConstants.WAIT_UNTIL_READY_TO_SEARCH,
-                                new NullProgressMonitor());
-                    }
-                    catch (Exception e) { /* best effort */ }
-
-                    if (!matches.isEmpty())
-                    {
-                        result.append("Candidates:\n");
-                        for (String match : matches)
-                        {
-                            result.append("  - `import ").append(match).append(";`\n");
-                        }
-                    }
-                    else
-                    {
-                        result.append("No matching types found in workspace.\n");
-                    }
-                    result.append("\n");
-                    suggestionCount++;
+                    continue;
                 }
+
+                String typeName = message.split(" ")[0].replace("\"", "");
+                Integer line = (Integer) marker.getAttribute(IMarker.LINE_NUMBER);
+
+                unresolved.add(new ImportSuggestionsResponse.UnresolvedType(
+                        typeName,
+                        line == null ? -1 : line.intValue(),
+                        message,
+                        findCandidateTypes(typeName)));
             }
 
-            if (suggestionCount == 0)
-            {
-                result.append("No unresolved type errors found. Consider using `organizeImports` to clean up imports.\n");
-            }
-
-            return result.toString();
+            return ImportSuggestionsResponse.of(projectName, filePath, unresolved);
         }
         catch (Exception e)
         {
             logger.error(e.getMessage(), e);
-            return "Error getting import suggestions: " + e.getMessage();
+            return ImportSuggestionsResponse.failed(projectName, filePath,
+                    ImportSuggestionsResponse.Status.FAILED,
+                    Diagnostic.fatal(DiagnosticCode.INTERNAL_ERROR,
+                            "Error getting import suggestions: " + e.getMessage()));
         }
+    }
+
+    /** Every workspace type whose simple name matches exactly, as a fully qualified name. */
+    private List<String> findCandidateTypes(String simpleName)
+    {
+        List<String> matches = new ArrayList<>();
+        try
+        {
+            new org.eclipse.jdt.core.search.SearchEngine().searchAllTypeNames(
+                    null, // any package
+                    org.eclipse.jdt.core.search.SearchPattern.R_EXACT_MATCH,
+                    simpleName.toCharArray(),
+                    org.eclipse.jdt.core.search.SearchPattern.R_EXACT_MATCH,
+                    org.eclipse.jdt.core.search.IJavaSearchConstants.TYPE,
+                    org.eclipse.jdt.core.search.SearchEngine.createWorkspaceScope(),
+                    new org.eclipse.jdt.core.search.TypeNameRequestor()
+                    {
+                        @Override
+                        public void acceptType(int modifiers, char[] packageName, char[] simpleTypeName,
+                                char[][] enclosingTypeNames, String path)
+                        {
+                            String qualifier = new String(packageName);
+                            matches.add(qualifier.isEmpty()
+                                    ? new String(simpleTypeName)
+                                    : qualifier + "." + new String(simpleTypeName));
+                        }
+                    },
+                    org.eclipse.jdt.core.search.IJavaSearchConstants.WAIT_UNTIL_READY_TO_SEARCH,
+                    new NullProgressMonitor());
+        }
+        catch (Exception e)
+        {
+            // Best effort: a type the index cannot answer for still belongs in the
+            // listing, with no candidates rather than not at all.
+            logger.error(e.getMessage(), e);
+        }
+        return matches;
     }
 
     private List<IJavaProject> getAvailableJavaProjects()

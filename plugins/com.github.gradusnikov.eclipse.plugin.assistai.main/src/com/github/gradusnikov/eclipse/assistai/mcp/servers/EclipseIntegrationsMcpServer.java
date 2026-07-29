@@ -1,6 +1,5 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.servers;
 
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
@@ -8,6 +7,29 @@ import java.util.Optional;
 import org.eclipse.e4.core.di.annotations.Creatable;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.McpServer;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.CallHierarchyResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ClassOutlineResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.CompilationProblemsResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ConsoleOutputResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.FileListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ImportSuggestionsResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.JavaDocResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MarkdownOutlineResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenDependenciesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenProjectListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MethodSourceResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.OpenProjectResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectLayoutResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectPropertiesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.QuickFixResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ReferencesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.SearchReplaceResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.SearchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestClassesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeHierarchyResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeResolutionResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.Tool;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.ToolParam;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeAnalysisService;
@@ -22,8 +44,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.ProjectService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.ResourceService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.SearchService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.UnitTestService;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceResultSerializer;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
 
 import io.modelcontextprotocol.spec.McpSchema;
 import jakarta.inject.Inject;
@@ -76,44 +97,60 @@ public class EclipseIntegrationsMcpServer
         return codeEditingService.formatCode( code, projectName );
     }
 
-    @Tool( name = "getJavaDoc", description = "Get the JavaDoc for the given compilation unit.  For example,a class B defined as a member type of a class A in package x.y should have athe fully qualified name \"x.y.A.B\".Note that in order to be found, a type name (or its top level enclosingtype name) must match its corresponding compilation unit name.", type = "object" )
-    public String getJavaDoc( @ToolParam( name = "fullyQualifiedName", description = "A fully qualified name of the compilation unit", required = true )
+    @Tool( name = "getJavaDoc", description = "Gets the JavaDoc of a Java type as Markdown, with each of its members' declarations. "
+            + "A member type of class A in package x.y is named x.y.A.B, and a type name must match its compilation unit name to be found. "
+            + "status separates the three cases that used to share one sentence: OK, NO_JAVADOC (the type exists and is undocumented - read the "
+            + "source instead) and TYPE_NOT_FOUND (no open project resolves the name - fix it). projectName says which project answered.",
+            type = "object", outputType = JavaDocResponse.class )
+    public JavaDocResponse getJavaDoc( @ToolParam( name = "fullyQualifiedName", description = "A fully qualified name of the compilation unit", required = true )
     String fullyQualifiedClassName )
     {
         return javaDocService.getJavaDoc( fullyQualifiedClassName );
     }
 
-    @Tool( name = "getSource", description = "Get source for a workspace or referenced-library class. Prefers original/attached source and decompiles binary classes when source is unavailable.", type = "object" )
-    public String getSource( @ToolParam( name = "fullyQualifiedClassName", description = "A fully qualified class name of the Java class", required = true )
+    @Tool( name = "getSource", description = "Get source for a workspace or referenced-library class. Prefers original/attached source and decompiles binary classes when source is unavailable. "
+            + "origin says which of the three it is: only WORKSPACE_SOURCE can be edited, and version.modificationStamp is the token an edit passes as expectedModificationStamp.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult getSource( @ToolParam( name = "fullyQualifiedClassName", description = "A fully qualified class name of the Java class", required = true )
     String fullyQualifiedClassName )
     {
-        // Use resource-aware method and serialize for caching
-        ResourceToolResult result = javaDocService.getSourceWithResource( fullyQualifiedClassName );
-        return ResourceResultSerializer.serialize( result );
+        return javaDocService.getSourceWithResource( fullyQualifiedClassName );
     }
 
-    @Tool( name = "explainTypeResolution", description = "Explains exactly how a Java type resolves on one Eclipse project's classpath, including its source/binary origin, classpath root and entry, source attachment, class file, and getSource strategy.", type = "object" )
-    public String explainTypeResolution(
+    @Tool( name = "explainTypeResolution", description = "Explains how a Java type resolves on one Eclipse project's classpath: which classpath root and entry supplied it, "
+            + "whether that root is a workspace folder or an external archive, whether source is attached, and where its class file is. "
+            + "sourceOrigin is the same enum getSource and readProjectResource report - WORKSPACE_SOURCE, ATTACHED_SOURCE or DECOMPILED_CLASS - and says what getSource would return. "
+            + "A type backed by a workspace file also reports projectName and a project-relative filePath the reading and editing tools take. "
+            + "status separates a type that is not on the classpath from a project name that does not exist.",
+            type = "object", outputType = TypeResolutionResponse.class )
+    public TypeResolutionResponse explainTypeResolution(
             @ToolParam( name = "projectName", description = "The exact open Eclipse Java project name", required = true ) String projectName,
             @ToolParam( name = "fullyQualifiedClassName", description = "The fully qualified Java type name", required = true ) String fullyQualifiedClassName )
     {
         return javaDocService.explainTypeResolution( projectName, fullyQualifiedClassName );
     }
 
-    @Tool( name = "getClassOutline", description = "Returns a compact outline of a Java class: class declaration, field declarations, method signatures (no bodies), and inner types â all with line numbers. Much more token-efficient than getSource for understanding class structure. Use this first, then getMethodSource for specific methods.", type = "object" )
-    public String getClassOutline(
+    @Tool( name = "getClassOutline", description = "Returns the outline of a Java class: its declaration plus fields, method signatures (no bodies) and inner types. "
+            + "Every entry carries a 1-based startLine and endLine, so one member can be read with readProjectResource(projectName, filePath, startLine, endLine) "
+            + "instead of fetching the whole file. Much cheaper than getSource; use this first, then getMethodSource or readProjectResource for the member you want. "
+            + "status reports TYPE_NOT_FOUND, NO_SOURCE or ACCESS_DENIED rather than an empty outline.",
+            type = "object", outputType = ClassOutlineResponse.class )
+    public ClassOutlineResponse getClassOutline(
             @ToolParam( name = "fullyQualifiedClassName", description = "A fully qualified class name (e.g. 'com.example.MyClass')", required = true )
             String fullyQualifiedClassName,
             @ToolParam( name = "includeFields", description = "Whether to include field declarations (default: true)", required = false )
             String includeFields )
     {
         boolean fields = Optional.ofNullable( includeFields ).map( Boolean::parseBoolean ).orElse( true );
-        ResourceToolResult result = outlineService.getClassOutline( fullyQualifiedClassName, fields );
-        return ResourceResultSerializer.serialize( result );
+        return codeAnalysisService.getClassOutline( fullyQualifiedClassName, fields );
     }
 
-    @Tool( name = "getMethodSource", description = "Returns the source code of specific method(s) with line numbers. Accepts comma-separated method names to retrieve multiple methods in one call. Use after getClassOutline to read only the methods you need.", type = "object" )
-    public String getMethodSource(
+    @Tool( name = "getMethodSource", description = "Returns the source of specific method(s) of one class. Accepts comma-separated method names to retrieve several in one call. "
+            + "Each method comes back as exact source with its own 1-based range, so its lines can be passed straight to the editing tools; "
+            + "a requested name that matches nothing is listed in notFound rather than mentioned in a comment. "
+            + "version.modificationStamp is the token an edit passes as expectedModificationStamp. Use after getClassOutline to read only the methods you need.",
+            type = "object", outputType = MethodSourceResponse.class )
+    public MethodSourceResponse getMethodSource(
             @ToolParam( name = "fullyQualifiedClassName", description = "A fully qualified class name (e.g. 'com.example.MyClass')", required = true )
             String fullyQualifiedClassName,
             @ToolParam( name = "methodNames", description = "Comma-separated method names to retrieve (e.g. 'findById,save,delete')", required = true )
@@ -123,12 +160,15 @@ public class EclipseIntegrationsMcpServer
             String includeJavadoc )
     {
         boolean javadoc = Optional.ofNullable( includeJavadoc ).map( Boolean::parseBoolean ).orElse( true );
-        ResourceToolResult result = outlineService.getMethodSource( fullyQualifiedClassName, methodNames, methodSignature, javadoc );
-        return ResourceResultSerializer.serialize( result );
+        return outlineService.getMethodSource( fullyQualifiedClassName, methodNames, methodSignature, javadoc );
     }
 
-    @Tool( name = "getFilteredSource", description = "Returns source code with optional import exclusion and selective method expansion. Methods not in the expand list are collapsed to their signature with line ranges. Line numbers always match the original file for accurate editing.", type = "object" )
-    public String getFilteredSource(
+    @Tool( name = "getFilteredSource", description = "Returns one class's source with the import block and the bodies of the methods you did not ask for left out. "
+            + "The content is exact - no line-number prefixes and no '// ... collapsed' comments - and every omission is a range in omittedRanges, "
+            + "so a caller that wants one back reads it with readProjectResource(projectName, filePath, startLine, endLine). "
+            + "status is PARTIAL whenever anything was omitted.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult getFilteredSource(
             @ToolParam( name = "fullyQualifiedClassName", description = "A fully qualified class name (e.g. 'com.example.MyClass')", required = true )
             String fullyQualifiedClassName,
             @ToolParam( name = "excludeImports", description = "Whether to collapse the import block (default: true)", required = false )
@@ -137,32 +177,41 @@ public class EclipseIntegrationsMcpServer
             String methodNames )
     {
         boolean noImports = Optional.ofNullable( excludeImports ).map( Boolean::parseBoolean ).orElse( true );
-        ResourceToolResult result = outlineService.getFilteredSource( fullyQualifiedClassName, noImports, methodNames );
-        return ResourceResultSerializer.serialize( result );
+        return outlineService.getFilteredSource( fullyQualifiedClassName, noImports, methodNames );
     }
 
-    @Tool( name = "getProjectProperties", description = "Retrieves the properties and configuration of a specified project.", type = "object" )
-    public String getProjectProperties( @ToolParam( name = "projectName", description = "The name of the project to analyze", required = true )
+    @Tool( name = "getProjectProperties", description = "Gets how a project is configured: its nature ids, the build descriptors in its root, and for a Java project its "
+            + "compiler compliance level, output location and source folders. sourceFolders is the answer to 'where may a new class go?' and, like outputLocation, is "
+            + "project-relative - the form the reading and editing tools take. status separates a name that does not exist (fix the name; listProjects has the real ones) "
+            + "from a project that is closed (call openProject on its directory).",
+            type = "object", outputType = ProjectPropertiesResponse.class )
+    public ProjectPropertiesResponse getProjectProperties( @ToolParam( name = "projectName", description = "The name of the project to analyze", required = true )
     String projectName )
     {
         return projectService.getProjectProperties( projectName );
     }
 
-    @Tool( name = "getProjectLayout", description = "Get the file and folder structure of a specified project in a hierarchical format. For large projects, use scopePath to limit to a subdirectory and/or maxDepth to limit tree depth.", type = "object" )
-    public String getProjectLayout( @ToolParam( name = "projectName", description = "The name of the project to analyze", required = true )
+    @Tool( name = "getProjectLayout", description = "Gets the file and folder tree of a project as nested nodes. Every node carries the project-relative filePath the reading and "
+            + "editing tools take, and a folder reports childCount even when the walk stopped at it - so 'is there more under here?' is answerable. "
+            + "truncated says whether maxDepth cut the listing short, and excludedCount how many entries .aiignore kept out. "
+            + "For large projects use scopePath to limit to a subdirectory and/or maxDepth to limit tree depth.",
+            type = "object", outputType = ProjectLayoutResponse.class )
+    public ProjectLayoutResponse getProjectLayout( @ToolParam( name = "projectName", description = "The name of the project to analyze", required = true )
     String projectName,
             @ToolParam( name = "scopePath", description = "Optional path relative to the project root to limit the listing (e.g., 'src/main/java/com/example'). If omitted, shows the entire project.", required = false )
             String scopePath,
             @ToolParam( name = "maxDepth", description = "Optional maximum depth of the directory tree to display (e.g., '3' for 3 levels deep). If omitted, shows all levels.", required = false )
             String maxDepth )
     {
-        int depth = Optional.ofNullable( maxDepth ).map( Integer::parseInt ).orElse( -1 );
-        ResourceToolResult result = projectService.getProjectLayoutWithResource( projectName, scopePath, depth );
-        return ResourceResultSerializer.serialize( result );
+        Integer depth = Optional.ofNullable( maxDepth ).map( Integer::parseInt ).orElse( null );
+        return projectService.getProjectLayout( projectName, scopePath, depth );
     }
 
-    @Tool( name = "getMethodCallHierarchy", longExecution = true, description = "Retrieves the call hierarchy (callers) for a specified method to understand how it's used in the codebase.", type = "object" )
-    public String getMethodCallHierarchy(
+    @Tool( name = "getMethodCallHierarchy", longExecution = true, description = "Finds the callers of a method, and what that method calls, to understand how it is used. "
+            + "Each node reports projectName, filePath and a 1-based lineNumber - the same location triple findReferences returns - so a caller can be opened "
+            + "without a follow-up search. depth is a field: 1 is a direct caller, 2 a caller of one of those. status distinguishes an unknown type from an unknown method.",
+            type = "object", outputType = CallHierarchyResponse.class )
+    public CallHierarchyResponse getMethodCallHierarchy(
             @ToolParam( name = "fullyQualifiedClassName", description = "The fully qualified name of the class containing the method", required = true )
             String fullyQualifiedClassName, @ToolParam( name = "methodName", description = "The name of the method to analyze", required = true )
             String methodName,
@@ -175,36 +224,40 @@ public class EclipseIntegrationsMcpServer
                 Optional.ofNullable( maxDepth ).map( Integer::parseInt ).orElse( 0 ) );
     }
 
-    @Tool( name = "getCompilationErrors", description = "Retrieves compilation errors and problems from the current workspace or a specific project.", type = "object" )
-    public String getCompilationErrors(
+    @Tool( name = "getCompilationErrors", description = "Retrieves compilation errors and problems from the current workspace or a specific project. "
+            + "Reports errorCount/warningCount for everything that matched, before any truncation, so 'are there errors?' is answerable "
+            + "even from a shortened listing. Each problem carries its markerId and quick-fix indices for executeQuickFix.",
+            type = "object", outputType = CompilationProblemsResponse.class )
+    public CompilationProblemsResponse getCompilationErrors(
             @ToolParam( name = "projectName", description = "The name of the specific project to check (optional, leave empty for all projects)", required = false )
             String projectName,
             @ToolParam( name = "severity", description = "Filter by severity level: 'ERROR', 'WARNING', or 'ALL' (default)", required = false )
             String severity, @ToolParam( name = "maxResults", description = "Maximum number of problems to return (default: 50)", required = false )
             String maxResults )
     {
-        return codeAnalysisService.getCompilationErrors( projectName, severity, Optional.ofNullable( maxResults ).map( Integer::parseInt ).orElse( 0 ) );
+        return codeAnalysisService.getCompilationErrors( projectName, severity,
+                Optional.ofNullable( maxResults ).map( Integer::parseInt ).orElse( 0 ) );
     }
 
-    @Tool( name = "readProjectResource", description = "Read the content of a text resource from a specified project. Supports line numbers, reading specific line ranges, and collapsing Java imports to reduce token usage.", type = "object" )
-    public String readProjectResource( @ToolParam( name = "projectName", description = "The name of the project containing the resource", required = true )
+    @Tool( name = "readProjectResource", description = "Read the content of a text resource from a specified project. "
+            + "Returns the exact source text with no fence or line-number prefixes: the line the content starts at is returnedRange.startLine. "
+            + "version.modificationStamp is the token to pass back as expectedModificationStamp when editing, so a write is rejected if the file "
+            + "changed since the read. Supports line ranges and collapsing Java imports, which are reported in omittedRanges.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult readProjectResource( @ToolParam( name = "projectName", description = "The name of the project containing the resource", required = true )
     String projectName, @ToolParam( name = "resourcePath", description = "The path to the resource relative to the project root", required = true )
     String resourcePath,
-            @ToolParam( name = "showLineNumbers", description = "If 'true', prepends line numbers to each line (like cat -n). Useful for creating accurate patches. Default: 'false'", required = false )
-            String showLineNumbers,
             @ToolParam( name = "startLine", description = "Optional 1-based start line to read from. If omitted, reads from the beginning.", required = false )
             String startLine,
             @ToolParam( name = "endLine", description = "Optional 1-based end line to read to (inclusive). If omitted, reads to the end.", required = false )
             String endLine,
-            @ToolParam( name = "excludeImports", description = "If 'true', collapses Java import statements into a single summary line. Line numbers are preserved for accurate editing. Default: 'false'", required = false )
+            @ToolParam( name = "excludeImports", description = "If 'true', omits a Java import block to save tokens. The omitted lines are reported in omittedRanges. Default: 'false'", required = false )
             String excludeImports )
     {
-        boolean lineNumbers = Optional.ofNullable( showLineNumbers ).map( Boolean::parseBoolean ).orElse( false );
         int start = Optional.ofNullable( startLine ).map( Integer::parseInt ).orElse( 0 );
         int end = Optional.ofNullable( endLine ).map( Integer::parseInt ).orElse( 0 );
         boolean noImports = Optional.ofNullable( excludeImports ).map( Boolean::parseBoolean ).orElse( false );
-        ResourceToolResult result = resourceService.readProjectResourceWithResource( projectName, resourcePath, lineNumbers, start, end, noImports );
-        return ResourceResultSerializer.serialize( result );
+        return resourceService.readResource( projectName, resourcePath, start, end, noImports );
     }
 
     @Tool( name = "readImageResource", description = "Reads a raster image from an Eclipse workspace project and returns it as MCP image content. Supported extensions: png, jpg, jpeg, gif, bmp, tif, tiff and ico. Maximum size: 20 MiB.", type = "object" )
@@ -219,45 +272,60 @@ public class EclipseIntegrationsMcpServer
         return new McpSchema.ImageContent( annotations, data, image.mimeType(), null );
     }
 
-    @Tool( name = "listProjects", description = "List all available projects in the workspace with their detected natures (Java, C/C++, Python, etc.).", type = "object" )
-    public String listProjects()
+    @Tool( name = "listProjects", description = "Lists the workspace projects. Each entry reports the projectName every other tool takes, "
+            + "whether the project is open (a closed one cannot be read, searched or built until openProject runs), its nature ids "
+            + "(org.eclipse.jdt.core.javanature for Java, org.eclipse.m2e.core.maven2Nature for Maven) and its filesystem location.",
+            type = "object", outputType = ProjectListResponse.class )
+    public ProjectListResponse listProjects()
     {
         return projectService.listProjects();
     }
 
-    @Tool( name = "openProject", description = "Opens/imports a project into the Eclipse workspace from a directory path. If the directory contains a .project file, it imports the project as-is. If not, a basic .project is created and the directory is imported as a generic project.", type = "object" )
-    public String openProject( @ToolParam( name = "directoryPath", description = "The absolute filesystem path to the directory to open as a project" )
+    @Tool( name = "openProject", description = "Opens or imports a directory into the Eclipse workspace as a project. If the directory contains a .project file it is imported as-is; "
+            + "if not, a description is created from the directory name. projectName is the name Eclipse assigned - taken from .project or from the directory name, and not "
+            + "necessarily the last segment of directoryPath - and it is the argument every other tool takes next. status says which of three things happened: IMPORTED "
+            + "(the workspace did not have it), OPENED (it had it, closed) or ALREADY_OPEN (nothing changed, which is an answer and not a failure).",
+            type = "object", outputType = OpenProjectResponse.class )
+    public OpenProjectResponse openProject( @ToolParam( name = "directoryPath", description = "The absolute filesystem path to the directory to open as a project" )
     String directoryPath )
     {
         return projectService.openProject( directoryPath );
     }
 
-    @Tool( name = "getCurrentlyOpenedFile", description = "Gets information about the currently active file in the Eclipse editor.", type = "object" )
-    public String getCurrentlyOpenedFile()
+    @Tool( name = "getCurrentlyOpenedFile", description = "Gets the file the user currently has open in the Eclipse editor, with its exact content. "
+            + "projectName and filePath are what the reading and editing tools take, and version.modificationStamp is the token an edit passes as "
+            + "expectedModificationStamp. status is FAILED when no workspace file is open - a state of the workbench, not an error.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult getCurrentlyOpenedFile()
     {
-        // Use resource-aware method and serialize for caching
-        ResourceToolResult result = editorService.getCurrentlyOpenedFileContentWithResource();
-        return ResourceResultSerializer.serialize( result );
+        return editorService.readCurrentlyOpenedFile();
     }
 
-    @Tool( name = "getEditorSelection", description = "Gets the currently selected text or lines in the active editor.", type = "object" )
-    public String getEditorSelection()
+    @Tool( name = "getEditorSelection", description = "Gets the text the user has selected in the active editor, as a range read of the open file. "
+            + "returnedRange gives the exact 1-based start and end line and column of the selection, and totalLines the size of the whole file. "
+            + "Nothing selected is an OK result with a zero-width range and empty content; status is FAILED only when no text editor is open.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult getEditorSelection()
     {
-        return editorService.getEditorSelection();
+        return editorService.readEditorSelection();
     }
 
-    @Tool( name = "getConsoleOutput", description = "Retrieves the recent output from Eclipse console(s).", type = "object" )
-    public String getConsoleOutput(
+    @Tool( name = "getConsoleOutput", description = "Retrieves the recent output of Eclipse console(s). A console is read from its end, so returnedRange says which lines came back "
+            + "out of totalLines and truncated says whether maxLines left earlier ones out - raise maxLines to reach them, a console has no line-range read. "
+            + "totalConsoles says how many consoles exist, so you can tell the only console from one of several.",
+            type = "object", outputType = ConsoleOutputResponse.class )
+    public ConsoleOutputResponse getConsoleOutput(
             @ToolParam( name = "consoleName", description = "Name of the specific console to retrieve (optional, leave empty for all or most recent console)", required = false )
             String consoleName, @ToolParam( name = "maxLines", description = "Maximum number of lines to retrieve (default: 100)", required = false )
             String maxLines,
-            @ToolParam( name = "includeAllConsoles", description = "Whether to include output from all available consoles (default: false)", required = false )
-            Boolean includeAllConsoles )
+            @ToolParam( name = "includeAllConsoles", description = "If 'true', includes output from all available consoles. Default: 'false'", required = false )
+            String includeAllConsoles )
     {
-        // Use resource-aware method and serialize for caching
-        ResourceToolResult result = consoleService.getConsoleOutputWithResource( consoleName,
-                Optional.ofNullable( maxLines ).map( Integer::parseInt ).orElse( 0 ), includeAllConsoles );
-        return ResourceResultSerializer.serialize( result );
+        // Every tool argument arrives as a String, so a declared Boolean parameter would
+        // fail at Method.invoke with an argument type mismatch. Parse it here instead.
+        boolean allConsoles = Optional.ofNullable( includeAllConsoles ).map( Boolean::parseBoolean ).orElse( false );
+        return consoleService.getConsoleOutput( consoleName,
+                Optional.ofNullable( maxLines ).map( Integer::parseInt ).orElse( null ), allConsoles );
     }
 
 
@@ -273,8 +341,9 @@ public class EclipseIntegrationsMcpServer
                + "'summary' (pass/fail counts) and 'results' (per-test details). "
                + "getOperationStatus will show these automatically while the run is in progress.",
            type = "object",
-           longExecution = true )
-    public String runJUnitTests(
+           longExecution = true,
+           outputType = TestRunResponse.class )
+    public TestRunResponse runJUnitTests(
             @ToolParam( name = "projectName",
                         description = "The exact Eclipse project name containing the test classes (use listProjects to find it)",
                         required = true )
@@ -329,8 +398,9 @@ public class EclipseIntegrationsMcpServer
         }
     }
 
-    @Tool( name = "findTestClasses", description = "Finds test classes and separates plain JUnit tests from PDE harness tests, which must follow the *PDETest naming convention. Flags likely PDE runtime usage in incorrectly named tests.", type = "object" )
-    public String findTestClasses(
+    @Tool( name = "findTestClasses", description = "Finds test classes and separates plain JUnit tests from PDE harness tests, which must follow the *PDETest naming convention. Flags likely PDE runtime usage in incorrectly named tests. Each class carries the project-relative path of its source file.", type = "object",
+           outputType = TestClassesResponse.class )
+    public TestClassesResponse findTestClasses(
             @ToolParam( name = "projectName", description = "The exact Eclipse project name to search (use listProjects to find it)", required = true )
             String projectName )
     {
@@ -373,14 +443,20 @@ public class EclipseIntegrationsMcpServer
         return mavenService.getEffectivePom( projectName );
     }
 
-    @Tool( name = "listMavenProjects", description = "Lists all available Maven projects in the workspace.", type = "object" )
-    public String listMavenProjects()
+    @Tool( name = "listMavenProjects", description = "Lists the Maven projects m2e knows about in the workspace. Each entry reports both names: the Eclipse projectName "
+            + "every other tool takes, and the groupId/artifactId/version/packaging a Maven command line takes. The two are frequently different strings.",
+            type = "object", outputType = MavenProjectListResponse.class )
+    public MavenProjectListResponse listMavenProjects()
     {
         return mavenService.listMavenProjects();
     }
 
-    @Tool( name = "getProjectDependencies", longExecution = true, description = "Gets Maven project dependencies.", type = "object" )
-    public String getProjectDependencies( @ToolParam( name = "projectName", description = "The name of the Maven project", required = true )
+    @Tool( name = "getProjectDependencies", longExecution = true, description = "Lists the dependencies one project's pom declares. These come from the Maven project model - "
+            + "what the pom declares after inheritance from its parent - and not from the resolved transitive graph; for the fully resolved form use getEffectivePom. "
+            + "version is null when the pom does not state one here, which is the ordinary case for a dependency managed by a parent's dependencyManagement. "
+            + "scope is 'compile' when the pom omits it, the default Maven itself applies.",
+            type = "object", outputType = MavenDependenciesResponse.class )
+    public MavenDependenciesResponse getProjectDependencies( @ToolParam( name = "projectName", description = "The name of the Maven project", required = true )
     String projectName )
     {
         return mavenService.getProjectDependencies( projectName );
@@ -388,16 +464,23 @@ public class EclipseIntegrationsMcpServer
 
     // Code Analysis Tools
 
-    @Tool( name = "getTypeHierarchy", longExecution = true, description = "Retrieves the type hierarchy (supertypes, implemented interfaces, and subtypes) for a given Java class or interface.", type = "object" )
-    public String getTypeHierarchy(
+    @Tool( name = "getTypeHierarchy", longExecution = true, description = "Retrieves the type hierarchy of a Java class or interface as three separate lists: "
+            + "superclasses (nearest first), implemented interfaces and subtypes. A type whose source is in the workspace also reports the projectName "
+            + "and project-relative filePath the reading and editing tools take; one from a JAR or the JRE reports neither. "
+            + "status is TYPE_NOT_FOUND when no open Java project knows the name.",
+            type = "object", outputType = TypeHierarchyResponse.class )
+    public TypeHierarchyResponse getTypeHierarchy(
             @ToolParam( name = "fullyQualifiedClassName", description = "The fully qualified name of the class (e.g., 'com.example.MyClass')", required = true )
             String fullyQualifiedClassName )
     {
         return codeAnalysisService.getTypeHierarchy( fullyQualifiedClassName );
     }
 
-    @Tool( name = "findReferences", longExecution = true, description = "Finds all references/usages of a Java type, method, or field across the entire workspace. Essential before renaming or deleting code elements.", type = "object" )
-    public String findReferences(
+    @Tool( name = "findReferences", longExecution = true, description = "Finds all references/usages of a Java type, method, or field across the entire workspace. "
+            + "Essential before renaming or deleting code elements: totalReferences of 0 means nothing uses it. "
+            + "Each reference reports projectName, filePath and a 1-based lineNumber.",
+            type = "object", outputType = ReferencesResponse.class )
+    public ReferencesResponse findReferences(
             @ToolParam( name = "fullyQualifiedClassName", description = "The fully qualified name of the class containing the element", required = true )
             String fullyQualifiedClassName,
             @ToolParam( name = "elementName", description = "Optional method or field name to search for. If omitted, searches for references to the class itself.", required = false )
@@ -406,8 +489,11 @@ public class EclipseIntegrationsMcpServer
         return codeAnalysisService.findReferences( fullyQualifiedClassName, elementName );
     }
 
-    @Tool( name = "executeQuickFix", longExecution = true, description = "Applies a specific quick fix proposal to a compilation problem. Use getCompilationErrors first to obtain the Marker ID and proposal index.", type = "object" )
-    public String executeQuickFix(
+    @Tool( name = "executeQuickFix", longExecution = true, description = "Applies one quick fix proposal to a compilation problem. Use getCompilationErrors first for the markerId and the proposal index. "
+            + "status is APPLIED, MARKER_NOT_FOUND (the id is stale - re-run getCompilationErrors), NO_PROPOSALS, INVALID_PROPOSAL_INDEX (pick from availableProposals) "
+            + "or APPLY_FAILED. On APPLIED, markerResolved says whether the problem actually went away.",
+            type = "object", outputType = QuickFixResponse.class )
+    public QuickFixResponse executeQuickFix(
             @ToolParam( name = "markerId", description = "The Marker ID of the problem (from getCompilationErrors or getQuickFixes)", required = true )
             String markerId,
             @ToolParam( name = "proposalIndex", description = "The 0-based index of the quick fix proposal to apply (from the quick fixes list)", required = true )
@@ -416,8 +502,11 @@ public class EclipseIntegrationsMcpServer
         return codeAnalysisService.executeQuickFix( Long.parseLong( markerId ), Integer.parseInt( proposalIndex ) );
     }
 
-    @Tool( name = "getImportSuggestions", longExecution = true, description = "Finds import candidates for unresolved types in a Java file. Shows matching fully qualified names from the workspace for each unresolved type error.", type = "object" )
-    public String getImportSuggestions( @ToolParam( name = "projectName", description = "The name of the project containing the file", required = true )
+    @Tool( name = "getImportSuggestions", longExecution = true, description = "Finds import candidates for the unresolved types in a Java file. Each candidate is a bare fully qualified name, ready to use. "
+            + "totalUnresolvedTypes of 0 means the file has no unresolved names; totalCandidates of 0 means it has some but the workspace offers nothing for them. "
+            + "status separates PROJECT_NOT_FOUND from PROJECT_CLOSED, which is one openProject call away.",
+            type = "object", outputType = ImportSuggestionsResponse.class )
+    public ImportSuggestionsResponse getImportSuggestions( @ToolParam( name = "projectName", description = "The name of the project containing the file", required = true )
     String projectName, @ToolParam( name = "filePath", description = "The path to the Java file relative to the project root", required = true )
     String filePath )
     {
@@ -426,51 +515,87 @@ public class EclipseIntegrationsMcpServer
 
     // Search Service Tools
 
-    @Tool( name = "fileSearch", longExecution = true, description = "Searches for a plain substring in workspace files using Eclipse's text search engine.", type = "object" )
-    public String fileSearch(
+    @Tool( name = "fileSearch", longExecution = true, description = "Searches for a plain substring in workspace files using Eclipse's text search engine. "
+            + "Each match reports projectName, filePath and a 1-based lineNumber, which can be passed straight to the reading and editing tools.",
+            type = "object", outputType = SearchResponse.class )
+    public SearchResponse fileSearch(
             @ToolParam( name = "containingText", description = "Text that must be contained in a line (plain substring, not regex)", required = true )
             String containingText,
-            @ToolParam( name = "fileNamePatterns", description = "Optional file name patterns. Accepts either an array (e.g. [\"*.java\", \"*.xml\"]) or a string (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
-            Object fileNamePatterns )
-    {
-        String[] patterns = normalizeFileNamePatterns( fileNamePatterns );
-        return searchService.fileSearch( containingText, patterns ).toString();
-    }
-
-    @Tool( name = "fileSearchRegExp", longExecution = true, description = "Searches workspace files using a Java regular expression via Eclipse's text search engine.", type = "object" )
-    public String fileSearchRegExp( @ToolParam( name = "pattern", description = "Java regular expression", required = true )
-    String pattern,
-            @ToolParam( name = "fileNamePatterns", description = "Optional file name patterns. Accepts either an array (e.g. [\"*.java\", \"*.xml\"]) or a string (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
-            Object fileNamePatterns )
-    {
-        String[] patterns = normalizeFileNamePatterns( fileNamePatterns );
-        return searchService.fileSearchRegExp( pattern, patterns ).toString();
-    }
-
-    @Tool( name = "findFiles", description = "Finds workspace files matching the given glob patterns.", type = "object" )
-    public String findFiles(
-            @ToolParam( name = "fileNamePatterns", description = "Glob patterns. Accepts either an array (e.g. [\"*.java\", \"pom.xml\"]) or a string (e.g. \"*.java, pom.xml\"). If omitted, defaults to '*'", required = false )
-            Object fileNamePatterns, @ToolParam( name = "maxResults", description = "Maximum number of results to return (default: 200)", required = false )
+            @ToolParam( name = "fileNamePatterns", description = "Optional comma-separated file name patterns (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
+            String fileNamePatterns,
+            @ToolParam( name = "maxResults", description = "Maximum number of matches to return (default: 200). The response reports whether it was truncated.", required = false )
             String maxResults )
     {
-        String[] patterns = normalizeFileNamePatterns( fileNamePatterns );
-        int limit = Optional.ofNullable( maxResults ).map( Integer::parseInt ).orElse( 0 );
-        return resourceService.findFiles( patterns, limit ).toString();
+        String[] patterns = splitFileNamePatterns( fileNamePatterns );
+        return SearchResponse.from( containingText,
+                searchService.fileSearch( containingText, patterns ), searchLimit( maxResults ) );
     }
 
-    @Tool( name = "searchAndReplace", longExecution = true, description = "Search and replace across multiple files in the workspace using Eclipse's text search engine.", type = "object" )
-    public String searchAndReplace( @ToolParam( name = "containingText", description = "Plain text to find (not regex)", required = true )
+    @Tool( name = "fileSearchRegExp", longExecution = true, description = "Searches workspace files using a Java regular expression via Eclipse's text search engine. "
+            + "Each match reports projectName, filePath and a 1-based lineNumber.",
+            type = "object", outputType = SearchResponse.class )
+    public SearchResponse fileSearchRegExp( @ToolParam( name = "pattern", description = "Java regular expression", required = true )
+    String pattern,
+            @ToolParam( name = "fileNamePatterns", description = "Optional comma-separated file name patterns (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
+            String fileNamePatterns,
+            @ToolParam( name = "maxResults", description = "Maximum number of matches to return (default: 200). The response reports whether it was truncated.", required = false )
+            String maxResults )
+    {
+        String[] patterns = splitFileNamePatterns( fileNamePatterns );
+        return SearchResponse.from( pattern,
+                searchService.fileSearchRegExp( pattern, patterns ), searchLimit( maxResults ) );
+    }
+
+    /** Matches are capped by default: a workspace-wide search can return thousands. */
+    private static int searchLimit( String maxResults )
+    {
+        if ( maxResults == null || maxResults.isBlank() )
+        {
+            return 200;
+        }
+        try
+        {
+            return Integer.parseInt( maxResults.trim() );
+        }
+        catch ( NumberFormatException e )
+        {
+            return 200;
+        }
+    }
+
+    @Tool( name = "findFiles", description = "Finds workspace files matching the given glob patterns. "
+            + "Each file reports projectName and a project-relative filePath, which is what the reading and editing tools take.",
+            type = "object", outputType = FileListResponse.class )
+    public FileListResponse findFiles(
+            @ToolParam( name = "fileNamePatterns", description = "Comma-separated glob patterns (e.g. \"*.java, pom.xml\"). If omitted, defaults to '*'", required = false )
+            String fileNamePatterns, @ToolParam( name = "maxResults", description = "Maximum number of results to return (default: 200)", required = false )
+            String maxResults )
+    {
+        String[] patterns = splitFileNamePatterns( fileNamePatterns );
+        int limit = Optional.ofNullable( maxResults ).map( Integer::parseInt ).orElse( 0 );
+        return FileListResponse.from( patterns, resourceService.findFiles( patterns, limit ), limit );
+    }
+
+    @Tool( name = "searchAndReplace", longExecution = true, description = "Search and replace across multiple files in the workspace using Eclipse's text search engine. "
+            + "Reports per file how many occurrences were found and how many were replaced; the two differ when a file could not be fully updated.",
+            type = "object", outputType = SearchReplaceResponse.class )
+    public SearchReplaceResponse searchAndReplace( @ToolParam( name = "containingText", description = "Plain text to find (not regex)", required = true )
     String containingText, @ToolParam( name = "replacementText", description = "Replacement text (can be empty)", required = true )
     String replacementText,
-            @ToolParam( name = "fileNamePatterns", description = "Optional file name patterns. Accepts either an array (e.g. [\"*.java\", \"*.xml\"]) or a string (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
-            Object fileNamePatterns )
+            @ToolParam( name = "fileNamePatterns", description = "Optional comma-separated file name patterns (e.g. \"*.java,*.xml\"). If omitted, all files are searched.", required = false )
+            String fileNamePatterns )
     {
-        String[] patterns = normalizeFileNamePatterns( fileNamePatterns );
-        return searchService.searchAndReplace( containingText, replacementText, patterns ).toString();
+        String[] patterns = splitFileNamePatterns( fileNamePatterns );
+        return SearchReplaceResponse.from( containingText, replacementText,
+                searchService.searchAndReplace( containingText, replacementText, patterns ) );
     }
 
-    @Tool( name = "getMarkdownOutline", description = "Returns the heading structure (table of contents) of a Markdown file with line numbers and section sizes. Use this to understand a large Markdown document before fetching specific sections with getMarkdownSection.", type = "object" )
-    public String getMarkdownOutline( @ToolParam( name = "projectName", description = "The name of the project containing the Markdown file", required = true )
+    @Tool( name = "getMarkdownOutline", description = "Returns the heading structure (table of contents) of a Markdown file. Each heading carries its level, its 1-based index - which is "
+            + "what getMarkdownSection takes, and unambiguous where two sections share a title - and the line range of the section it opens. "
+            + "A file with no headings comes back as an empty list, not as a failure. "
+            + "Use this to understand a large Markdown document before fetching sections with getMarkdownSection.",
+            type = "object", outputType = MarkdownOutlineResponse.class )
+    public MarkdownOutlineResponse getMarkdownOutline( @ToolParam( name = "projectName", description = "The name of the project containing the Markdown file", required = true )
     String projectName,
             @ToolParam( name = "resourcePath", description = "The path to the Markdown file relative to the project root (e.g., 'docs/README.md')", required = true )
             String resourcePath )
@@ -478,8 +603,11 @@ public class EclipseIntegrationsMcpServer
         return markdownService.getOutline( projectName, resourcePath );
     }
 
-    @Tool( name = "getMarkdownSection", description = "Reads a specific section from a Markdown file by heading name or index. Returns the section content with line numbers. Use getMarkdownOutline first to see available headings.", type = "object" )
-    public String getMarkdownSection( @ToolParam( name = "projectName", description = "The name of the project containing the Markdown file", required = true )
+    @Tool( name = "getMarkdownSection", description = "Reads one section of a Markdown file, addressed by heading text or by its 1-based index in the outline. "
+            + "Returns the exact section text with no line-number prefixes: returnedRange says which lines of the file it is, out of totalLines, "
+            + "and version.modificationStamp is the token an edit passes as expectedModificationStamp. Use getMarkdownOutline first to see available headings.",
+            type = "object", outputType = ResourceReadResult.class )
+    public ResourceReadResult getMarkdownSection( @ToolParam( name = "projectName", description = "The name of the project containing the Markdown file", required = true )
     String projectName, @ToolParam( name = "resourcePath", description = "The path to the Markdown file relative to the project root", required = true )
     String resourcePath,
             @ToolParam( name = "heading", description = "The heading to find â either a 1-based index from the outline, or a text substring to match (case-insensitive)", required = true )
@@ -491,51 +619,21 @@ public class EclipseIntegrationsMcpServer
         return markdownService.getSection( projectName, resourcePath, heading, includeSubs );
     }
 
-    private static String[] normalizeFileNamePatterns( Object fileNamePatterns )
+    /**
+     * Splits the comma-separated pattern list the tool descriptions document, e.g.
+     * {@code "*.java, *.xml, test.http"}.
+     * <p>
+     * Every tool argument reaches this class as a String, so there is nothing else to
+     * accept: the previous {@code Object} parameter only ever worked because Jackson
+     * happened to hand over a List or a String, and a declared array would have failed
+     * at {@code Method.invoke}.
+     */
+    private static String[] splitFileNamePatterns( String fileNamePatterns )
     {
-        if ( fileNamePatterns == null )
+        if ( fileNamePatterns == null || fileNamePatterns.isBlank() )
         {
             return new String[0];
         }
-
-        if ( fileNamePatterns instanceof String[] )
-        {
-            return (String[]) fileNamePatterns;
-        }
-
-        if ( fileNamePatterns instanceof List )
-        {
-            @SuppressWarnings( "rawtypes" )
-            List list = (List) fileNamePatterns;
-            List<String> out = new ArrayList<>();
-            for ( Object o : list )
-            {
-                if ( o != null )
-                {
-                    String s = String.valueOf( o ).trim();
-                    if ( !s.isEmpty() )
-                    {
-                        out.add( s );
-                    }
-                }
-            }
-            return out.toArray( String[]::new );
-        }
-
-        if ( fileNamePatterns instanceof String )
-        {
-            String s = ( (String) fileNamePatterns ).trim();
-            if ( s.isEmpty() )
-            {
-                return new String[0];
-            }
-
-            // allow comma-separated patterns: "*.java, *.xml, test.http"
-            return s.split( "\\s*,\\s*" );
-        }
-
-        // Fallback: accept any scalar and treat it as a single pattern
-        String s = String.valueOf( fileNamePatterns ).trim();
-        return s.isEmpty() ? new String[0] : new String[] { s };
+        return fileNamePatterns.trim().split( "\\s*,\\s*" );
     }
 }

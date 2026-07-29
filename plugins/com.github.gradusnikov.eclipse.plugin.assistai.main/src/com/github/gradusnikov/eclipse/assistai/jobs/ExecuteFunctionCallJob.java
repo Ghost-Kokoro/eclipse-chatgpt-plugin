@@ -25,9 +25,14 @@ import com.github.gradusnikov.eclipse.assistai.chat.ConversationContext;
 import com.github.gradusnikov.eclipse.assistai.chat.FunctionCall;
 import com.github.gradusnikov.eclipse.assistai.mcp.local.InMemoryMcpClientRetistry;
 import com.github.gradusnikov.eclipse.assistai.resources.CachedResource;
+import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IPath;
+
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceCache;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceResultSerializer;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
 import com.github.gradusnikov.eclipse.assistai.tools.ImageUtilities;
 
 import io.modelcontextprotocol.spec.McpSchema;
@@ -200,6 +205,12 @@ public class ExecuteFunctionCallJob extends Job
         {
             textContent.append( "Error: " );
         }
+        // A structured read is recognised from structuredContent, and only from there.
+        // The __resourceCache__ envelope this used to sniff out of the tool's text is
+        // gone along with ResourceToolResult, so there is one recognition path rather
+        // than two that could disagree about what a read is.
+        String cachedReference = cacheStructuredRead( result.structuredContent() );
+
         var contentParts = Optional.ofNullable( result.content() ).orElse( Collections.emptyList() );
         for ( McpSchema.Content content : contentParts )
         {
@@ -207,8 +218,9 @@ public class ExecuteFunctionCallJob extends Job
             {
                 case "text" -> {
                     String text = ( (McpSchema.TextContent) content ).text();
-                    // Check if this is a cacheable resource result
-                    textContent.append( processPossibleResourceResult( text ) ).append( "\n" );
+                    // Sending the content again would double the tokens the caching
+                    // exists to save.
+                    textContent.append( cachedReference != null ? cachedReference : text ).append( "\n" );
                 }
                 case "image" -> attachments.add( createImageAttachment( (McpSchema.ImageContent) content ) );
                 default -> logger.error( "Unsupported result content type: " + content.type() );
@@ -253,40 +265,51 @@ public class ExecuteFunctionCallJob extends Job
     }
 
     /**
-     * Processes text that might be a serialized ResourceToolResult. If it is,
-     * caches the resource and returns a reference. Otherwise, returns the text
-     * unchanged.
+     * Caches a resource the tool reported as structured content.
+     * <p>
+     * Recognition is by the shape of the payload rather than by a marker embedded in
+     * the tool's text: reads used to be spotted by matching {@code __resourceCache__}
+     * in the prose, which made the chat depend on how each tool worded its output.
+     *
+     * @return the reference to put in the conversation in place of the content, or
+     *         null when the payload is not a cacheable read
      */
-    private String processPossibleResourceResult( String text )
+    private String cacheStructuredRead( Object structuredContent )
     {
-        // Check if this is a serialized resource result
-        if ( !ResourceResultSerializer.isResourceResult( text ) )
+        ResourceReadResult read = ResourceReadResult.fromStructuredContent( structuredContent );
+        if ( read == null || !read.isCacheable() )
         {
-            return text;
+            return null;
         }
 
-        ResourceToolResult resourceResult = ResourceResultSerializer.deserialize( text );
-        if ( resourceResult == null || !resourceResult.isCacheable() )
+        IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( read.projectName() );
+        if ( project == null || !project.exists() )
         {
-            // Deserialization failed or not cacheable, return original content
-            return resourceResult != null ? resourceResult.content() : text;
+            return null;
+        }
+        IFile file = project.getFile( IPath.fromOSString( read.filePath() ) );
+        if ( !file.exists() )
+        {
+            return null;
         }
 
-        // Cache the resource
-        CachedResource cached = resourceCache.put( resourceResult );
+        CachedResource cached = resourceCache.put(
+                ResourceDescriptor.fromWorkspaceFile( file, functionCall.name() ), read.content() );
+        if ( cached == null )
+        {
+            return null;
+        }
 
-        if ( cached != null )
-        {
-            // Return a reference instead of full content
-            logger.info( "Cached resource: " + cached.descriptor().uri() + " (v" + cached.version() + ")" );
-            return String.format( "[Resource cached: %s (version %d, ~%d tokens)]\n" + "Content available in <resources> block at top of context.",
-                    cached.descriptor().uri(), cached.version(), cached.estimateTokens() );
-        }
-        else
-        {
-            // Caching failed, return full content
-            return resourceResult.content();
-        }
+        logger.info( "Cached resource: " + cached.descriptor().uri() + " (v" + cached.version() + ")" );
+        return String.format(
+                "[Resource cached: %s (version %d, ~%d tokens)]%n"
+                        + "Content available in <resources> block at top of context.%n"
+                        + "Lines %d-%d of %d. modificationStamp=%d",
+                cached.descriptor().uri(), cached.version(), cached.estimateTokens(),
+                read.returnedRange() == null ? 1 : read.returnedRange().startLine(),
+                read.returnedRange() == null ? read.totalLines() : read.returnedRange().endLine(),
+                read.totalLines(),
+                read.version() == null ? -1 : read.version().modificationStamp() );
     }
 
     private IStatus handleExecutionError( Throwable throwable )

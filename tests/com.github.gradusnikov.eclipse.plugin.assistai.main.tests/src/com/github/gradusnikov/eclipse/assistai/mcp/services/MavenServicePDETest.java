@@ -1,5 +1,7 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -7,6 +9,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.Optional;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
@@ -34,6 +37,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.osgi.framework.Bundle;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenDependenciesResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenProjectListResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.MavenService;
 
 @SuppressWarnings("restriction")
@@ -289,31 +294,37 @@ public class MavenServicePDETest {
     
     @Test
     public void testListMavenProjects() {
-        // Test listing Maven projects
-        String projects = service.listMavenProjects();
-        
-        // In test environment, might return "No Maven projects found" which is acceptable
-        if (projects.contains("No Maven projects found")) {
-            System.out.println("Note: No Maven projects found - this is acceptable in test environment");
-            assumeTrue(true, "No Maven projects found is acceptable in test environment");
-        } else {
-            // If projects are found, verify our test project is there
-            assertTrue(projects.contains(TEST_PROJECT_NAME) || 
-                       projects.contains("Maven projects in the workspace"));
+        MavenProjectListResponse projects = service.listMavenProjects();
+
+        // An empty workspace is a count of zero, not a sentence saying so.
+        assertEquals(projects.projects().size(), projects.totalProjects());
+
+        for (MavenProjectListResponse.MavenProject project : projects.projects()) {
+            // The Eclipse name is what every other tool takes; the coordinates are what
+            // a build takes. Both are fields rather than one indented bullet.
+            assertNotNull(project.projectName());
+            assertNotNull(project.groupId());
+            assertNotNull(project.artifactId());
         }
     }
     
     @Test
     public void testGetProjectDependencies() {
         try {
-            // Test getting project dependencies
-            String dependencies = service.getProjectDependencies(TEST_PROJECT_NAME);
-            
-            // Verify result contains expected dependencies
-            assertTrue(dependencies.contains("Dependencies for project"));
-            assertTrue(dependencies.contains("GroupId: junit"));
-            assertTrue(dependencies.contains("ArtifactId: junit"));
-            assertTrue(dependencies.contains("Scope: test"));
+            MavenDependenciesResponse dependencies = service.getProjectDependencies(TEST_PROJECT_NAME);
+
+            assertEquals(TEST_PROJECT_NAME, dependencies.projectName());
+            assertEquals(dependencies.dependencies().size(), dependencies.totalDependencies());
+
+            Optional<MavenDependenciesResponse.MavenDependency> junit = dependencies.dependencies().stream()
+                    .filter(dependency -> "junit".equals(dependency.artifactId()))
+                    .findFirst();
+
+            assertTrue(junit.isPresent(), String.valueOf(dependencies.dependencies()));
+            assertEquals("junit", junit.get().groupId());
+            assertEquals("4.13.2", junit.get().version());
+            assertEquals("test", junit.get().scope());
+            assertFalse(junit.get().versionManagedElsewhere(), "this pom states the version itself");
         } catch (RuntimeException e) {
             if (e.getMessage().contains("Could not find Maven configuration")) {
                 // This is expected in test environment

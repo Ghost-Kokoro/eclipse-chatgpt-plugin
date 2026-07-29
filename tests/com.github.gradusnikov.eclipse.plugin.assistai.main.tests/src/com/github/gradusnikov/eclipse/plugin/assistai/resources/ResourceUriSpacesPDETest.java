@@ -27,6 +27,7 @@ import org.osgi.framework.FrameworkUtil;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.services.ResourceService;
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
 
 /**
  * A resource whose name contains a space used to be unreadable: the URI was
@@ -97,13 +98,18 @@ public class ResourceUriSpacesPDETest
     @Test
     public void readsAFileWhoseNameContainsSpaces()
     {
-        String result = service.readProjectResource( PROJECT_NAME, FOLDER_WITH_SPACE + "/" + FILE_WITH_SPACE );
+        ResourceReadResult result =
+                service.readResource( PROJECT_NAME, FOLDER_WITH_SPACE + "/" + FILE_WITH_SPACE, 0, 0, false );
 
-        // The bug surfaced as an exception message rather than content.
-        assertFalse( result.contains( "Illegal character in path" ), result );
-        assertFalse( result.contains( "URISyntaxException" ), result );
-        assertTrue( result.contains( "body line" ), result );
+        // The bug surfaced as a failure to build the resource's URI at all. The status
+        // and the URI say it is fixed; the wording of a message no longer can, and
+        // should not have been what this asserted on in the first place.
+        assertEquals( ResourceReadResult.ReadStatus.OK, result.status(),
+                () -> String.valueOf( result.diagnostics() ) );
+        assertTrue( result.uri().contains( "%20" ), result.uri() );
+        assertTrue( result.content().contains( "body line" ), result.content() );
     }
+
 
     @Test
     public void readsAnImageResourceAsBinaryData()

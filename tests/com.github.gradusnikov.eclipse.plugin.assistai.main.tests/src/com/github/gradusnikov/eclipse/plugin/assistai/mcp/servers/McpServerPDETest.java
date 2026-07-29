@@ -1,9 +1,14 @@
 package com.github.gradusnikov.eclipse.plugin.assistai.mcp.servers;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+import java.util.List;
+import java.util.Map;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.ILogListener;
@@ -16,6 +21,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.osgi.framework.Bundle;
 
+import com.github.gradusnikov.eclipse.assistai.mcp.McpJson;
+import com.github.gradusnikov.eclipse.assistai.mcp.McpOutputSchemas;
+import com.github.gradusnikov.eclipse.assistai.mcp.StructuredToolResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.ActiveTargetResponse.TargetStatus;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse.RunStatus;
 import com.github.gradusnikov.eclipse.assistai.mcp.servers.PDEMcpServer;
 
 /**
@@ -75,31 +89,102 @@ public class McpServerPDETest
     }
 
     @Test
-    public void testGetActiveTarget_returnsNonNull()
+    public void testGetActiveTarget_describesTheTargetInForce()
     {
+        ActiveTargetResponse response;
         try
         {
-            String result = server.getActiveTarget();
-            assertNotNull( result, "getActiveTarget should not return null" );
+            response = server.getActiveTarget();
         }
         catch ( Exception e )
         {
             assumeTrue( false, "Skipping: PDE runtime not available (" + e.getMessage() + ")" );
+            return;
+        }
+
+        assertNotNull( response, "getActiveTarget should not return null" );
+        assertNotEquals( TargetStatus.FAILED, response.status(),
+            () -> String.valueOf( response.diagnostics() ) );
+        assertActiveTargetIsSelfConsistent( response );
+    }
+
+    @Test
+    public void testReloadTarget_noExplicitTargetIsNotAFailure()
+    {
+        ActiveTargetResponse response;
+        try
+        {
+            response = server.reloadTarget();
+        }
+        catch ( Exception e )
+        {
+            assumeTrue( false, "Skipping: PDE runtime not available (" + e.getMessage() + ")" );
+            return;
+        }
+
+        assertNotNull( response, "reloadTarget should not return null" );
+        // The point of the conversion: reload used to call "no target file is set" an
+        // error while getActiveTarget called the identical state normal. Whatever this
+        // workspace is, the two now agree on how to describe it.
+        assertEquals( server.getActiveTarget().explicitTarget(), response.explicitTarget() );
+        assertActiveTargetIsSelfConsistent( response );
+    }
+
+    /**
+     * A count of zero would say the target resolved to nothing, which is a far worse
+     * situation than one that has not been resolved yet - so an unresolved target has no
+     * count at all.
+     */
+    private static void assertActiveTargetIsSelfConsistent( ActiveTargetResponse response )
+    {
+        if ( !response.resolved() )
+        {
+            assertNull( response.bundleCount(),
+                "bundleCount must be absent rather than 0 when the target is not resolved" );
+        }
+        if ( !response.explicitTarget() )
+        {
+            assertNull( response.name(), "the running platform is not a named target" );
+            assertNull( response.memento() );
         }
     }
 
     @Test
-    public void testReloadTarget_returnsNonNull()
+    public void anActiveTargetSendsExactlyTheFieldsItAdvertises()
     {
-        try
-        {
-            String result = server.reloadTarget();
-            assertNotNull( result, "reloadTarget should not return null" );
-        }
-        catch ( Exception e )
-        {
-            assumeTrue( false, "Skipping: PDE runtime not available (" + e.getMessage() + ")" );
-        }
+        // The schema comes from the record components and the payload from Jackson; a
+        // derived accessor - isUsable() here - would otherwise be serialized as a field
+        // the schema never mentioned.
+        @SuppressWarnings( "unchecked" )
+        Map<String, Object> advertised = (Map<String, Object>) McpOutputSchemas
+            .forType( ActiveTargetResponse.class ).get( "properties" );
+
+        assertEquals( advertised.keySet(),
+            McpJson.toMap( ActiveTargetResponse.active( "a-target", "memento", true, true, 412 ) ).keySet() );
+        assertEquals( advertised.keySet(),
+            McpJson.toMap( ActiveTargetResponse.runningPlatform() ).keySet(),
+            "every state of the response has to have the same shape" );
+    }
+
+    @Test
+    public void aFailedLoadStillSaysWhatIsInForce()
+    {
+        ActiveTargetResponse loaded = ActiveTargetResponse.active( "a-target", "memento", true, true, 412 );
+        ActiveTargetResponse failed = loaded.withFailure(
+            Diagnostic.retryable( DiagnosticCode.OPERATION_TIMED_OUT, "took too long" ) );
+
+        assertEquals( TargetStatus.FAILED, failed.status() );
+        assertEquals( List.of( DiagnosticCode.OPERATION_TIMED_OUT ),
+            failed.diagnostics().stream().map( Diagnostic::code ).toList() );
+        assertEquals( "a-target", failed.name(), "the target that is still active is the caller's next question" );
+        assertEquals( Integer.valueOf( 412 ), failed.bundleCount() );
+    }
+
+    @Test
+    public void anUnresolvedTargetHasNoBundleCount()
+    {
+        assertNull( ActiveTargetResponse.active( "a-target", "memento", true, false, 0 ).bundleCount() );
+        assertNull( ActiveTargetResponse.runningPlatform().bundleCount() );
     }
 
     // -----------------------------------------------------------------------
@@ -114,11 +199,8 @@ public class McpServerPDETest
         try
         {
             // no className/packageName → runs all tests in project
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, null, null, null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, null, null, null, null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -131,11 +213,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, null, "30", null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, null, null, "30", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -148,11 +227,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, null, "10", null, "true", null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, null, null, "10", null, "true", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -165,11 +241,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, null, "10", null, "false", null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, null, null, "10", null, "false", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -182,12 +255,9 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
+            assertProjectNotFound( server.runJUnitPluginTests(
                 "NonExistentProject_XYZ", null, null, null, "10", null, "false",
-                "org.eclipse.core.runtime,org.eclipse.ui", null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+                "org.eclipse.core.runtime,org.eclipse.ui", null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -200,11 +270,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", "com.example.MyTest", null, null, null, null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", "com.example.MyTest", null, null, null, null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -217,11 +284,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", "com.example.MyTest", null, null, "10", null, "true", null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", "com.example.MyTest", null, null, "10", null, "true", null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -234,12 +298,9 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
+            assertProjectNotFound( server.runJUnitPluginTests(
                 "NonExistentProject_XYZ", "com.example.MyTest", null, null, "10", null, "false",
-                "org.eclipse.core.runtime, org.eclipse.ui", null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+                "org.eclipse.core.runtime, org.eclipse.ui", null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -259,12 +320,10 @@ public class McpServerPDETest
     @Test
     public void testStartJUnitPluginTestRun_multipleClasses_areAccepted()
     {
-        String result = server.runJUnitPluginTests(
+        assertProjectNotFound( server.runJUnitPluginTests(
             "NonExistentProject_XYZ",
             " com.example.FirstPDETest, com.example.SecondPDETest ",
-            null, null, "10", null, "false", "org.eclipse.ui, org.eclipse.core.runtime", null );
-
-        assertTrue( result.startsWith( "Error" ), result );
+            null, null, "10", null, "false", "org.eclipse.ui, org.eclipse.core.runtime", null ) );
     }
 
     @Test
@@ -272,11 +331,8 @@ public class McpServerPDETest
     {
         try
         {
-            String result = server.runJUnitPluginTests(
-                "NonExistentProject_XYZ", null, null, "com.example.tests", "10", null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+            assertProjectNotFound( server.runJUnitPluginTests(
+                "NonExistentProject_XYZ", null, null, "com.example.tests", "10", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -292,15 +348,12 @@ public class McpServerPDETest
     public void testStartJUnitPluginTestRun_singleMethod_routesToRunJUnitPluginTestMethod()
     {
         // className + methodName → delegates to pdeService.runJUnitPluginTestMethod
-        // Non-existent project produces an error, confirming the routing reached the service.
+        // Non-existent project produces a PROJECT_NOT_FOUND diagnostic.
         try
         {
-            String result = server.runJUnitPluginTests(
+            assertProjectNotFound( server.runJUnitPluginTests(
                 "NonExistentProject_XYZ", "com.example.MyTest", "testSomething",
-                null, "10", null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+                null, "10", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
@@ -311,18 +364,17 @@ public class McpServerPDETest
     @Test
     public void testStartJUnitPluginTestRun_methodName_withMultipleClasses_isRejected()
     {
-        // methodName combined with comma-separated classNames must return an error message,
+        // methodName combined with comma-separated classNames must return a VALIDATION_ERROR,
         // not throw, since the check happens inside the routing block.
-        String result = server.runJUnitPluginTests(
+        TestRunResponse response = server.runJUnitPluginTests(
             "NonExistentProject_XYZ",
             "com.example.FirstTest, com.example.SecondTest",
             "testSomething",
             null, "10", null, null, null, null );
-        assertNotNull( result );
-        assertTrue( result.startsWith( "Error" ),
-            "Expected error when methodName is combined with multiple classNames, got: " + result );
-        assertTrue( result.contains( "exactly one className" ),
-            "Error message should mention 'exactly one className', got: " + result );
+        assertNotNull( response );
+        assertEquals( RunStatus.FAILED_TO_START, response.status(), response.summaryText() );
+        assertEquals( List.of( DiagnosticCode.VALIDATION_ERROR ),
+            response.diagnostics().stream().map( Diagnostic::code ).toList() );
     }
 
     @Test
@@ -332,16 +384,26 @@ public class McpServerPDETest
         // The package name wins and produces an error about the non-existent project.
         try
         {
-            String result = server.runJUnitPluginTests(
+            assertProjectNotFound( server.runJUnitPluginTests(
                 "NonExistentProject_XYZ", null, "testSomething", "com.example.tests",
-                "10", null, null, null, null );
-            assertNotNull( result );
-            assertTrue( result.startsWith( "Error" ),
-                "Expected error for non-existent project, got: " + result );
+                "10", null, null, null, null ) );
         }
         catch ( IllegalStateException e )
         {
             assumeTrue( false, "Skipping: workspace not available (" + e.getMessage() + ")" );
         }
+    }
+
+    /**
+     * Whatever scope was asked for, naming a project that is not in the workspace is
+     * reported as a diagnostic code on a structured result - not as a sentence starting
+     * with "Error", which a caller had to match on to notice.
+     */
+    private static void assertProjectNotFound( TestRunResponse response )
+    {
+        assertNotNull( response );
+        assertEquals( RunStatus.FAILED_TO_START, response.status(), response.summaryText() );
+        assertEquals( List.of( DiagnosticCode.PROJECT_NOT_FOUND ),
+            response.diagnostics().stream().map( Diagnostic::code ).toList() );
     }
 }

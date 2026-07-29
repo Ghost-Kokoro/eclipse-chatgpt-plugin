@@ -2,9 +2,7 @@ package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Predicate;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
@@ -28,7 +26,14 @@ import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jface.text.Document;
 import org.eclipse.ui.editors.text.TextFileDocumentProvider;
 
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.Diagnostic;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.DiagnosticCode;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.JavaDocResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeResolutionResponse;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceVersion;
+import com.github.gradusnikov.eclipse.assistai.resources.SourceOrigin;
 import com.github.gradusnikov.eclipse.assistai.services.AiIgnoreService;
 import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter;
 
@@ -52,38 +57,58 @@ public class JavaDocService
     private ClassFileDecompiler classFileDecompiler;
 
     /**
-     * Retrieves the attached JavaDoc documentation for a given class within the
-     * available Java projects. It searches all projects for the JavaDoc and if
-     * found, it returns the JavaDoc content. If no JavaDoc is found, it returns
-     * a message stating that JavaDoc is not available for the specified class.
+     * The documentation of a type, as Markdown.
+     * <p>
+     * The body stays text - it is rendered Markdown, one thing with nothing smuggled
+     * alongside it. What needed a field is the miss:
+     * {@code "JavaDoc is not available for X"} occupied the answer slot, so a type with
+     * no documentation, a misspelled name, and a type whose real documentation contains
+     * that sentence were three indistinguishable results.
      *
      * @param fullyQualifiedClassName
      *            The fully qualified name of the class to find the JavaDoc for.
-     * @return The JavaDoc string if available; otherwise, a message indicating
-     *         it is not available.
+     * @return the documentation with its status, or a not-found result carrying the
+     *         reason as a code
      */
-    public String getJavaDoc( String fullyQualifiedClassName )
+    public JavaDocResponse getJavaDoc( String fullyQualifiedClassName )
     {
-        return getAvailableJavaProjects().stream().map( project -> getAttachedJavadoc( fullyQualifiedClassName, project ) ).filter( Objects::nonNull )
-                .filter( Predicate.not( String::isBlank ) ).findAny().orElse( "JavaDoc is not available for " + fullyQualifiedClassName );
+        for ( IJavaProject javaProject : getAvailableJavaProjects() )
+        {
+            IType type;
+            try
+            {
+                type = javaProject.findType( fullyQualifiedClassName );
+            }
+            catch ( JavaModelException e )
+            {
+                logger.error( e.getMessage(), e );
+                continue;
+            }
+            if ( type == null )
+            {
+                continue;
+            }
+
+            JavaDocText documentation = collectJavaDoc( type );
+            return JavaDocResponse.of(
+                    documentation.documented() ? JavaDocResponse.Status.OK : JavaDocResponse.Status.NO_JAVADOC,
+                    fullyQualifiedClassName, javaProject.getElementName(), documentation.markdown() );
+        }
+
+        return JavaDocResponse.notFound( fullyQualifiedClassName,
+                Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_FOUND, "No open Java project resolves '"
+                        + fullyQualifiedClassName + "'. A member type is named x.y.A.B, and a type name must"
+                        + " match its compilation unit name to be found." ) );
     }
 
     /**
-     * Retrieves the source code attached to the specified class within the
-     * available Java projects. It searches all projects for the source code and
-     * if found, returns the source content. If no source code is found or an
-     * exception occurs, it returns a message indicating that the source is not
-     * available for the specified class.
+     * The rendered documentation of a type, and whether any of it is documentation.
      *
-     * @param fullyQualifiedClassName
-     *            The fully qualified name of the class for which to find the
-     *            source code.
-     * @return The source code string if available; otherwise, a message
-     *         indicating it is not available.
+     * @param documented false when every member contributed only its declaration -
+     *            which is what tells "this type has no Javadoc" from "no such type"
      */
-    public String getSource( String fullyQualifiedClassName )
+    private record JavaDocText( String markdown, boolean documented )
     {
-        return getSourceWithResource( fullyQualifiedClassName ).getContent();
     }
 
     /**
@@ -124,32 +149,24 @@ public class JavaDocService
     }
 
     /**
-     * Gathers and returns JavaDoc information for a specified class within a
-     * given Java project. It retrieves the JavaDoc by looking up the type
-     * corresponding to the fully qualified class name and extracting its
-     * documentation, as well as the documentation of its children elements.
+     * Gathers the documentation of a type and of every member it declares, and
+     * converts the HTML JDT produces into Markdown.
      *
-     * @param fullyQualifiedClassName
-     *            The fully qualified name of the class for which to retrieve
-     *            JavaDoc.
-     * @param javaProject
-     *            The Java project within which to search for the class.
-     * @return A string containing the JavaDoc for the class and its children,
-     *         or an empty string if not found.
+     * @return the Markdown, and whether anything in it was actually documentation
      */
-    private String getAttachedJavadoc( String fullyQualifiedClassName, IJavaProject javaProject )
+    private JavaDocText collectJavaDoc( IType type )
     {
-        String javaDoc = "";
+        StringBuilder html = new StringBuilder();
+        boolean documented = false;
         try
         {
-            IType type = javaProject.findType( fullyQualifiedClassName );
-            if ( Objects.nonNull( type ) )
-            {
-                javaDoc += getMemberJavaDoc( (IMember) type );
+            documented |= appendMemberJavaDoc( type, html );
 
-                for ( IJavaElement child : type.getChildren() )
+            for ( IJavaElement child : type.getChildren() )
+            {
+                if ( child instanceof IMember member )
                 {
-                    javaDoc += getMemberJavaDoc( (IMember) child );
+                    documented |= appendMemberJavaDoc( member, html );
                 }
             }
         }
@@ -158,31 +175,31 @@ public class JavaDocService
             logger.error( e.getMessage(), e );
         }
 
-        var converter = FlexmarkHtmlConverter.builder().build();
-        String markdown = converter.convert( javaDoc );
-        return markdown;
+        return new JavaDocText( FlexmarkHtmlConverter.builder().build().convert( html.toString() ), documented );
     }
 
     /**
-     * Retrieves the JavaDoc documentation for a given member of a Java project.
-     * This method extracts the JavaDoc directly if it is attached to the
-     * member, or from the source buffer if it is available. If no JavaDoc is
-     * found, this method returns an empty string.
+     * Appends one member's documentation, taken from its attached Javadoc if a
+     * documentation location is configured and from the source buffer otherwise, and
+     * then the member's own declaration.
+     * <p>
+     * The declaration is appended either way, which is why the returned flag exists:
+     * the text is never empty for a type that resolves, so its emptiness cannot be
+     * used to mean "undocumented".
      *
-     * @param member
-     *            The member for which to retrieve the JavaDoc documentation.
-     * @return A string containing the JavaDoc documentation, or an empty string
-     *         if none is found.
+     * @return whether this member contributed documentation rather than only its
+     *         declaration
      * @throws JavaModelException
      *             if an error occurs while retrieving the JavaDoc.
      */
-    private String getMemberJavaDoc( IMember member ) throws JavaModelException
+    private boolean appendMemberJavaDoc( IMember member, StringBuilder out ) throws JavaModelException
     {
-        String javaDoc = "";
+        boolean documented = false;
         String attachedJavaDoc = member.getAttachedJavadoc( null );
         if ( attachedJavaDoc != null )
         {
-            javaDoc += attachedJavaDoc;
+            out.append( attachedJavaDoc );
+            documented = true;
         }
         else
         {
@@ -193,15 +210,32 @@ public class JavaDocService
                 if ( unit != null )
                 {
                     IBuffer buffer = unit.getBuffer();
-                    javaDoc += buffer.getText( range.getOffset(), range.getLength() ) + "\n";
+                    out.append( buffer.getText( range.getOffset(), range.getLength() ) ).append( "\n" );
+                    documented = true;
                 }
             }
         }
-        javaDoc += member.toString() + "\n";
-        return javaDoc;
+        out.append( member.toString() ).append( "\n" );
+        return documented;
     }
 
-    public String explainTypeResolution( String projectName, String fullyQualifiedClassName )
+
+    /**
+     * How a Java type resolves on one project's classpath.
+     * <p>
+     * Mostly a report a person reads, with one part a program acts on: where the type's
+     * source is. That used to be a workspace-absolute path
+     * ({@code /Project/src/A.java}), which no reading or editing tool accepts, so an
+     * agent that copied it got {@code RESOURCE_NOT_FOUND}. It is a projectName plus a
+     * project-relative filePath here.
+     * <p>
+     * The {@code Kind} and {@code Source strategy} lines were two renderings of one
+     * fact that already has a type - {@link SourceOrigin}, which every read reports -
+     * so they are that enum rather than prose.
+     *
+     * @return the resolution, or a failed result naming which of the two lookups missed
+     */
+    public TypeResolutionResponse explainTypeResolution( String projectName, String fullyQualifiedClassName )
     {
         if ( projectName == null || projectName.isBlank() )
         {
@@ -212,17 +246,26 @@ public class JavaDocService
             throw new IllegalArgumentException( "Fully qualified class name cannot be empty." );
         }
 
-        IJavaProject javaProject = getAvailableJavaProjects().stream()
+        Optional<IJavaProject> javaProject = getAvailableJavaProjects().stream()
                 .filter( project -> projectName.equals( project.getElementName() ) )
-                .findFirst()
-                .orElseThrow( () -> new IllegalArgumentException( "Open Java project not found: " + projectName ) );
+                .findFirst();
+        if ( javaProject.isEmpty() )
+        {
+            return TypeResolutionResponse.failed( fullyQualifiedClassName, projectName,
+                    TypeResolutionResponse.Status.PROJECT_NOT_FOUND,
+                    Diagnostic.fatal( DiagnosticCode.PROJECT_NOT_FOUND, "No open Java project named '" + projectName
+                            + "'. Use listProjects to see the workspace." ) );
+        }
 
         try
         {
-            IType type = javaProject.findType( fullyQualifiedClassName );
+            IType type = javaProject.get().findType( fullyQualifiedClassName );
             if ( type == null )
             {
-                return "Type '" + fullyQualifiedClassName + "' is not resolved on the classpath of project '" + projectName + "'.";
+                return TypeResolutionResponse.failed( fullyQualifiedClassName, projectName,
+                        TypeResolutionResponse.Status.TYPE_NOT_RESOLVED,
+                        Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_FOUND, "Type '" + fullyQualifiedClassName
+                                + "' is not resolved on the classpath of project '" + projectName + "'." ) );
             }
 
             IPackageFragmentRoot root = (IPackageFragmentRoot) type.getAncestor( IJavaElement.PACKAGE_FRAGMENT_ROOT );
@@ -232,70 +275,37 @@ public class JavaDocService
             IResource resource = getTypeResource( type );
             String attachedSource = classFile == null ? null : classFile.getSource();
 
-            StringBuilder result = new StringBuilder();
-            result.append( "Type resolution for " ).append( fullyQualifiedClassName ).append( "\n" );
-            result.append( "Project: " ).append( projectName ).append( "\n" );
-            result.append( "Resolved name: " ).append( type.getFullyQualifiedName( '.' ) ).append( "\n" );
-            result.append( "Kind: " ).append( compilationUnit != null ? "workspace source" : "binary class" ).append( "\n" );
-            result.append( "Java element path: " ).append( type.getPath() ).append( "\n" );
-
-            if ( resource != null )
-            {
-                result.append( "Workspace resource: " ).append( resource.getFullPath() ).append( "\n" );
-            }
-            else
-            {
-                result.append( "Workspace resource: none (external or archive-backed type)\n" );
-            }
-
-            if ( root != null )
-            {
-                result.append( "Package fragment root: " ).append( root.getPath() ).append( "\n" );
-                result.append( "Root form: " );
-                if ( root.isArchive() )
-                {
-                    result.append( root.isExternal() ? "external archive" : "workspace archive" );
-                }
-                else
-                {
-                    result.append( root.isExternal() ? "external folder" : "workspace folder" );
-                }
-                result.append( "\n" );
-
-                if ( root.getSourceAttachmentPath() != null )
-                {
-                    result.append( "Source attachment: " ).append( root.getSourceAttachmentPath() ).append( "\n" );
-                }
-                else
-                {
-                    result.append( "Source attachment: none\n" );
-                }
-            }
-
-            if ( entry != null )
-            {
-                result.append( "Classpath entry: " ).append( classpathEntryKind( entry.getEntryKind() ) )
-                        .append( " -> " ).append( entry.getPath() ).append( "\n" );
-            }
-
-            if ( classFile != null )
-            {
-                result.append( "Class file: " ).append( classFile.getPath() ).append( "\n" );
-            }
-
+            SourceOrigin origin;
             if ( compilationUnit != null )
             {
-                result.append( "Source strategy: workspace compilation unit" );
+                origin = SourceOrigin.WORKSPACE_SOURCE;
             }
             else if ( attachedSource != null && !attachedSource.isBlank() )
             {
-                result.append( "Source strategy: attached library source" );
+                origin = SourceOrigin.ATTACHED_SOURCE;
             }
             else
             {
-                result.append( "Source strategy: no attached source; getSource will attempt decompilation" );
+                // A prediction rather than an observation: nothing has decompiled yet.
+                origin = SourceOrigin.DECOMPILED_CLASS;
             }
-            return result.toString();
+
+            return new TypeResolutionResponse(
+                    TypeResolutionResponse.Status.OK,
+                    fullyQualifiedClassName,
+                    type.getFullyQualifiedName( '.' ),
+                    projectName,
+                    origin,
+                    resource == null || resource.getProject() == null ? null : resource.getProject().getName(),
+                    resource == null ? null : resource.getProjectRelativePath().toString(),
+                    rootKindOf( root ),
+                    root == null ? null : root.getPath().toString(),
+                    root == null || root.getSourceAttachmentPath() == null
+                            ? null : root.getSourceAttachmentPath().toString(),
+                    entry == null ? null : classpathEntryKind( entry.getEntryKind() ),
+                    entry == null ? null : entry.getPath().toString(),
+                    classFile == null ? null : classFile.getPath().toString(),
+                    Diagnostic.none() );
         }
         catch ( JavaModelException e )
         {
@@ -303,30 +313,51 @@ public class JavaDocService
         }
     }
 
-    private String classpathEntryKind( int kind )
+    private static TypeResolutionResponse.RootKind rootKindOf( IPackageFragmentRoot root )
+    {
+        if ( root == null )
+        {
+            return null;
+        }
+        if ( root.isArchive() )
+        {
+            return root.isExternal() ? TypeResolutionResponse.RootKind.EXTERNAL_ARCHIVE
+                    : TypeResolutionResponse.RootKind.WORKSPACE_ARCHIVE;
+        }
+        return root.isExternal() ? TypeResolutionResponse.RootKind.EXTERNAL_FOLDER
+                : TypeResolutionResponse.RootKind.WORKSPACE_FOLDER;
+    }
+
+    private static TypeResolutionResponse.ClasspathEntryKind classpathEntryKind( int kind )
     {
         return switch ( kind )
         {
-            case IClasspathEntry.CPE_SOURCE -> "source";
-            case IClasspathEntry.CPE_PROJECT -> "project";
-            case IClasspathEntry.CPE_LIBRARY -> "library";
-            case IClasspathEntry.CPE_VARIABLE -> "variable";
-            case IClasspathEntry.CPE_CONTAINER -> "container";
-            default -> "unknown (" + kind + ")";
+            case IClasspathEntry.CPE_SOURCE -> TypeResolutionResponse.ClasspathEntryKind.SOURCE;
+            case IClasspathEntry.CPE_PROJECT -> TypeResolutionResponse.ClasspathEntryKind.PROJECT;
+            case IClasspathEntry.CPE_LIBRARY -> TypeResolutionResponse.ClasspathEntryKind.LIBRARY;
+            case IClasspathEntry.CPE_VARIABLE -> TypeResolutionResponse.ClasspathEntryKind.VARIABLE;
+            case IClasspathEntry.CPE_CONTAINER -> TypeResolutionResponse.ClasspathEntryKind.CONTAINER;
+            default -> TypeResolutionResponse.ClasspathEntryKind.UNKNOWN;
         };
     }
+
 
     /**
      * Retrieves source for a workspace or referenced-library class. Original
      * source (including source attachments) is preferred; binary classes are
      * decompiled only when no source is attached.
+     * <p>
+     * The {@code origin} of the result is the point of returning a record here: all
+     * three cases look like ordinary Java, but only workspace source can be written
+     * back, and an agent that edited a decompiled class would be editing a rendering
+     * of bytecode.
      *
      * @param fullyQualifiedClassName
      *            the fully qualified class name
-     * @return source content and resource metadata, or a transient not-found
-     *         result
+     * @return the source with its origin and version, or a failed result carrying
+     *         the reason as a code
      */
-    public ResourceToolResult getSourceWithResource( String fullyQualifiedClassName )
+    public ResourceReadResult getSourceWithResource( String fullyQualifiedClassName )
     {
         final String toolName = "getSource";
 
@@ -345,14 +376,18 @@ public class JavaDocService
                 {
                     if ( aiIgnoreService.isExcluded( file ) )
                     {
-                        return ResourceToolResult
-                                .transientResult( "Access denied: '" + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore.", toolName );
+                        return ResourceReadResult.failed( file.getProject().getName(),
+                                file.getProjectRelativePath().toString(),
+                                Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_ACCESSIBLE, "'"
+                                        + fullyQualifiedClassName + "' is excluded from AI processing by .aiignore." ) );
                     }
 
                     String workspaceSource = readWorkspaceSource( file );
                     if ( workspaceSource != null && !workspaceSource.isBlank() )
                     {
-                        return ResourceToolResult.fromJavaType( type, workspaceSource, toolName );
+                        return ResourceReadResult.of(
+                                ResourceDescriptor.fromJavaType( type, toolName ), workspaceSource,
+                                SourceOrigin.WORKSPACE_SOURCE, ResourceVersion.of( file ), Diagnostic.none() );
                     }
                 }
 
@@ -364,13 +399,17 @@ public class JavaDocService
                 }
                 if ( attachedSource != null && !attachedSource.isBlank() )
                 {
-                    return ResourceToolResult.fromJavaType( type, attachedSource, toolName );
+                    return ResourceReadResult.of(
+                            ResourceDescriptor.fromJavaType( type, toolName ), attachedSource,
+                            SourceOrigin.ATTACHED_SOURCE, ResourceVersion.UNKNOWN, Diagnostic.none() );
                 }
 
                 Optional<String> decompiledSource = classFileDecompiler.decompile( classFile );
                 if ( decompiledSource.isPresent() )
                 {
-                    return ResourceToolResult.fromJavaType( type, decompiledSource.get(), toolName );
+                    return ResourceReadResult.of(
+                            ResourceDescriptor.fromJavaType( type, toolName ), decompiledSource.get(),
+                            SourceOrigin.DECOMPILED_CLASS, ResourceVersion.UNKNOWN, Diagnostic.none() );
                 }
             }
             catch ( Exception e )
@@ -379,7 +418,10 @@ public class JavaDocService
             }
         }
 
-        return ResourceToolResult.transientResult( "Source is not available for " + fullyQualifiedClassName, toolName );
+        return ResourceReadResult.failed( null, null, Diagnostic.fatal( DiagnosticCode.RESOURCE_NOT_FOUND,
+                "No source available for '" + fullyQualifiedClassName
+                        + "'. The type resolved on no open project's classpath, or has neither attached"
+                        + " source nor decompilable bytecode." ) );
     }
 
     private IResource getTypeResource( IType type ) throws JavaModelException

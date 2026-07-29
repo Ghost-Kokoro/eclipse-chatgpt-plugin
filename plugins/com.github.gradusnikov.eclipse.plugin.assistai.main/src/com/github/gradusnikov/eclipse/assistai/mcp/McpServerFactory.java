@@ -23,6 +23,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.annotations.Tool;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.ToolParam;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
 import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationRegistry;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.OperationStatusResponse;
 
 import io.modelcontextprotocol.json.jackson2.JacksonMcpJsonMapperSupplier;
 import io.modelcontextprotocol.json.schema.JsonSchemaValidator;
@@ -186,6 +187,30 @@ public class McpServerFactory
         }
 
         var builder = McpSchema.CallToolResult.builder().isError( false );
+
+        if ( result instanceof StructuredToolResult structured )
+        {
+            // A tool only wraps its payload when the text has to say something the
+            // payload does not - paged console output, say.
+            builder.structuredContent( McpJson.toMap( structured.data() ) );
+            builder.addContent( createTextContent( structured.text() ) );
+            return builder.build();
+        }
+
+        if ( result instanceof Record payload )
+        {
+            // The text block carries the same data, per the MCP specification's
+            // backwards-compatibility guidance, but rendered rather than escaped: a
+            // multi-line string is fenced instead of collapsed into one line of \n.
+            // There is still no second, hand-written rendering - McpText is one rule
+            // over whatever the record holds, applied to the very map being sent as
+            // structuredContent, so the two cannot describe different outcomes.
+            Map<String, Object> content = McpJson.toMap( payload );
+            builder.structuredContent( content );
+            builder.addContent( createTextContent( McpText.render( content ) ) );
+            return builder.build();
+        }
+
         addResultContent( builder, result );
         return builder.build();
     }
@@ -255,9 +280,19 @@ public class McpServerFactory
                 schema.put( "properties", properties );
                 schema.put( "required", required );
                 schema.put( "additionalProperties", false );
-                McpSchema.Tool tool = McpSchema.Tool.builder( toolAnnotation.name(), schema ).title( toolAnnotation.name() )
-                        .description( describeTool( toolAnnotation ) ).build();
-                tools.add( tool );
+
+                var toolBuilder = McpSchema.Tool.builder( toolAnnotation.name(), schema ).title( toolAnnotation.name() )
+                        .description( describeTool( toolAnnotation ) );
+
+                // Only advertised when the tool declares a payload type: a schema on a
+                // tool that returns prose would promise structure that never arrives.
+                Map<String, Object> outputSchema = McpOutputSchemas.forType( toolAnnotation.outputType() );
+                if ( outputSchema != null )
+                {
+                    toolBuilder.outputSchema( outputSchema );
+                }
+
+                tools.add( toolBuilder.build() );
             }
         }
         return tools;
@@ -306,8 +341,9 @@ public class McpServerFactory
                    + "2 s, 3 s, 5 s, 10 s, 15 s (capped). Pass an explicit value to override. "
                    + "While the operation is RUNNING, all published intermediate results are always shown. "
                    + "After it finishes, pass includeResults to retrieve specific types.",
-               type = "object" )
-        public String getOperationStatus(
+               type = "object",
+               outputType = OperationStatusResponse.class )
+        public StructuredToolResult getOperationStatus(
                 @ToolParam( name = "operationId",
                             description = "The operationId handed back by the tool that started "
                                 + "the work (e.g. 'op-3'). Use listOperations if you lost it." )
@@ -339,12 +375,20 @@ public class McpServerFactory
         {
             // null/blank waitSeconds → -1 → auto-backoff in the registry
             int wait = ( waitSeconds == null || waitSeconds.isBlank() ) ? -1 : intArg( waitSeconds, 0 );
-            return operationRegistry.getOperationStatus(
+            String text = operationRegistry.getOperationStatus(
                 operationId,
                 intArg( outputOffset, 0 ),
                 intArg( outputLimit, 0 ),
                 wait,
                 ( includeResults == null || includeResults.isBlank() ) ? null : includeResults );
+
+            // Described after the wait, so a caller that blocked until the operation
+            // finished gets its structured result rather than a snapshot of it running.
+            OperationStatusResponse status = operationRegistry.find( operationId )
+                    .map( OperationStatusResponse::from )
+                    .orElseGet( () -> OperationStatusResponse.unknown( operationId ) );
+
+            return StructuredToolResult.of( status, text );
         }
 
 

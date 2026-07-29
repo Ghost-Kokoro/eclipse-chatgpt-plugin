@@ -15,7 +15,8 @@ import org.eclipse.ui.texteditor.ITextEditor;
 
 import com.github.gradusnikov.eclipse.assistai.mcp.services.EditorService;
 import com.github.gradusnikov.eclipse.assistai.resources.ResourceCache;
-import com.github.gradusnikov.eclipse.assistai.resources.ResourceToolResult;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceDescriptor;
+import com.github.gradusnikov.eclipse.assistai.resources.ResourceReadResult;
 
 import jakarta.inject.Inject;
 
@@ -216,15 +217,20 @@ public class CompletionContextBuilder
     
     /**
      * Ensures the file content is in ResourceCache for full context.
+     * <p>
+     * Exact content: the cache stores what the file says, not a decorated rendering of
+     * it. Caching a banner-and-line-numbers version here would have put the same file
+     * in the cache in a different shape depending on which path reached it first.
      */
     private void ensureFileInCache(IFile file) 
     {
         if (!resourceCache.get(file).isPresent()) 
         {
-            ResourceToolResult result = editorService.getCurrentlyOpenedFileContentWithResource();
-            if (result.isCacheable()) 
+            ResourceReadResult read = editorService.readCurrentlyOpenedFile();
+            if (read.isCacheable()) 
             {
-                resourceCache.put(result);
+                resourceCache.put(ResourceDescriptor.fromWorkspaceFile(file, "getCurrentlyOpenedFile"),
+                        read.content());
             }
         }
     }

@@ -1,8 +1,5 @@
 package com.github.gradusnikov.eclipse.plugin.assistai.mcp.services;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
-import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
 import org.eclipse.e4.core.contexts.ContextInjectionFactory;
@@ -17,12 +14,25 @@ import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationRegistry;
  * Base class for PDE tests that exercise Operation-backed service methods.
  * <p>
  * Provides {@link #initOperationRegistry(IEclipseContext)} to wire up the
- * registry from the subclass setUp, and {@link #runWithOperation} to execute a
- * service call inside an {@link OperationContext} and fail with the captured
- * console output when the result signals an error.
+ * registry from the subclass setUp, and
+ * {@link #runWithOperationConsoleOutputOnProblems} to execute a service call
+ * (and its assertions) inside an {@link OperationContext}. If any exception or
+ * assertion failure escapes, the full console output captured by the operation
+ * is printed to {@code System.out} before the throwable is re-thrown.
  */
 public abstract class AbstractOperationPDETest
 {
+    /**
+     * A {@link Runnable}-like that is allowed to throw checked exceptions.
+     * Used as the lambda parameter for
+     * {@link #runWithOperationConsoleOutputOnProblems}.
+     */
+    @FunctionalInterface
+    protected interface ThrowingRunnable
+    {
+        void run() throws Exception;
+    }
+
     protected OperationRegistry operationRegistry;
 
     /**
@@ -36,54 +46,71 @@ public abstract class AbstractOperationPDETest
     }
 
     /**
-     * Runs {@code call} inside an {@link OperationContext} bound to a freshly
-     * registered {@link Operation}.
+     * Runs {@code body} inside an {@link OperationContext} bound to a freshly
+     * registered {@link Operation}. The body should contain both the service
+     * call and all assertions.
      * <p>
-     * If the returned string starts with {@code "Error"} the test is failed
-     * immediately and the full console output captured by the operation is
-     * appended to the failure message, making it easy to diagnose why a
-     * long-running tool returned an error.
+     * If any exception or assertion failure escapes from {@code body}, the full
+     * console output captured by the operation is printed to
+     * {@code System.out} before the throwable is re-thrown. This makes it easy
+     * to see what a long-running launch (PDE test JVM, Maven build) actually
+     * printed when a test fails.
+     * <p>
+     * Normal test skips ({@code assumeTrue} etc.) still skip — the console is
+     * printed before re-throwing, but since the skip is routine the output is
+     * usually empty.
      *
      * @param operationName used as both tool name and label for the operation
-     * @param call          the service invocation to run
-     * @return the result string returned by the service call
-     * @throws Exception if the callable throws a checked exception
+     * @param body          the service invocation(s) and assertions to run
      */
-    protected String runWithOperation( String operationName, Callable<String> call ) throws Exception
+    protected void runWithOperationAndPrintConsoleOnProblems( String operationName, ThrowingRunnable body )
     {
         Operation op = operationRegistry.register( operationName, operationName );
 
-        // OperationContext.callWith takes a Supplier, so we must wrap any
-        // checked exception as an unchecked one and re-throw it afterwards.
-        Throwable[] checkedException = { null };
-        String result = OperationContext.callWith( op, () -> {
-            try
-            {
-                return call.call();
-            }
-            catch ( RuntimeException | Error e )
-            {
-                throw e;
-            }
-            catch ( Exception e )
-            {
-                checkedException[0] = e;
-                return "Error: " + e.getMessage();
-            }
-        } );
-
-        if ( checkedException[0] instanceof Exception ce )
+        // OperationContext.callWith takes a Supplier<T>. Checked exceptions
+        // cannot cross a Supplier boundary, so we carry them out manually.
+        Exception[] checkedException = { null };
+        try
         {
-            throw ce;
+            OperationContext.callWith( op, () -> {
+                try
+                {
+                    body.run();
+                }
+                catch ( RuntimeException | Error t )
+                {
+                    throw t;  // propagates directly
+                }
+                catch ( Exception e )
+                {
+                    checkedException[0] = e;
+                }
+                return null;
+            } );
+        }
+        catch ( RuntimeException | Error t )
+        {
+            printConsoleOutput( op, operationName );
+            throw t;
         }
 
-        if ( result != null && result.startsWith( "Error" ) )
+        if ( checkedException[0] != null )
         {
-            OperationOutputBuffer output = op.output();
-            fail( "'" + operationName + "' returned error: " + result
-                + "\n\nConsole output:\n" + output.page( 0, output.totalLines() ).lines().stream().collect(Collectors.joining("\n")) );
+            printConsoleOutput( op, operationName );
+            throw new RuntimeException( checkedException[0] );
         }
+    }
 
-        return result;
+    private static void printConsoleOutput( Operation op, String operationName )
+    {
+        OperationOutputBuffer output = op.output();
+        int total = output.totalLines();
+        if ( total > 0 )
+        {
+            System.out.println( "=== Console output for '" + operationName + "' ===" );
+            System.out.println(
+                output.page( 0, total ).lines().stream().collect( Collectors.joining( "\n" ) ) );
+            System.out.println( "=== End console output ===" );
+        }
     }
 }
