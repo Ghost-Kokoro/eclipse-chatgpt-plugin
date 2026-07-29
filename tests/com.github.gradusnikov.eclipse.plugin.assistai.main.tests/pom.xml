@@ -54,6 +54,16 @@
               <artifactId>org.eclipse.jdt.junit.runtime</artifactId>
               <version>0.0.0</version>
             </dependency>
+            <dependency>
+              <type>eclipse-plugin</type>
+              <artifactId>org.eclipse.pde.junit.runtime</artifactId>
+              <version>0.0.0</version>
+            </dependency>
+            <dependency>
+              <type>eclipse-plugin</type>
+              <artifactId>org.eclipse.jdt.junit4.runtime</artifactId>
+              <version>0.0.0</version>
+            </dependency>
           </dependencies>
         </configuration>
       </plugin>

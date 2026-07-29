@@ -3,7 +3,6 @@ package com.github.gradusnikov.eclipse.plugin.assistai.mcp.services;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -27,7 +26,6 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IPackageFragment;
 import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.JavaCore;
-import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.pde.core.target.ITargetDefinition;
 import org.eclipse.pde.core.target.ITargetHandle;
 import org.eclipse.pde.core.target.ITargetPlatformService;
@@ -46,7 +44,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.PDEService;
 
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
 @TestMethodOrder( MethodOrderer.OrderAnnotation.class )
-public class ServicePluginPDETest
+public class ServicePluginPDETest extends AbstractOperationPDETest
 {
     private static final String TEST_PLUGIN_PROJECT = "PDEServiceTest_PluginProject";
 
@@ -88,6 +86,7 @@ public class ServicePluginPDETest
         }
 
         service = ContextInjectionFactory.make( PDEService.class, context );
+        initOperationRegistry( context );
 
         createPluginTestProject();
     }
@@ -148,13 +147,25 @@ public class ServicePluginPDETest
         IFolder metaInf = project.getFolder( "META-INF" );
         if ( !metaInf.exists() ) metaInf.create( true, true, monitor );
 
+        // Determine the default VM's major Java version so compliance settings match at runtime
+        org.eclipse.jdt.launching.IVMInstall defaultVm = org.eclipse.jdt.launching.JavaRuntime.getDefaultVMInstall();
+        String javaVersion = "21"; // fallback
+        if ( defaultVm instanceof org.eclipse.jdt.launching.AbstractVMInstall avm )
+        {
+            String v = avm.getJavaVersion();
+            if ( v != null )
+            {
+                javaVersion = v.contains( "." ) ? v.substring( 0, v.indexOf( '.' ) ) : v;
+            }
+        }
+
         String manifest =
             "Manifest-Version: 1.0\n" +
             "Bundle-ManifestVersion: 2\n" +
             "Bundle-Name: PDE Test Plugin\n" +
             "Bundle-SymbolicName: " + TEST_PLUGIN_PROJECT + "\n" +
             "Bundle-Version: 1.0.0\n" +
-            "Bundle-RequiredExecutionEnvironment: JavaSE-21\n" +
+            "Bundle-RequiredExecutionEnvironment: JavaSE-" + javaVersion + "\n" +
             "Require-Bundle: org.junit\n" +
             "Export-Package: com.example.pdetest\n";
         createFile( project, "META-INF/MANIFEST.MF", manifest, monitor );
@@ -165,8 +176,15 @@ public class ServicePluginPDETest
             "bin.includes = META-INF/,.\n";
         createFile( project, "build.properties", buildProps, monitor );
 
+        // Force Java compliance to match the default VM
+        javaProject.setOption( JavaCore.COMPILER_SOURCE, javaVersion );
+        javaProject.setOption( JavaCore.COMPILER_COMPLIANCE, javaVersion );
+        javaProject.setOption( JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, javaVersion );
+
         IClasspathEntry srcEntry = JavaCore.newSourceEntry( srcFolder.getFullPath() );
-        IClasspathEntry jreEntry = JavaRuntime.getDefaultJREContainerEntry();
+        // Use the default JRE container — resolves to whatever VM Eclipse is configured to use
+        IClasspathEntry jreEntry = JavaCore.newContainerEntry(
+            IPath.fromOSString( org.eclipse.jdt.launching.JavaRuntime.JRE_CONTAINER ) );
         IClasspathEntry pdeEntry = JavaCore.newContainerEntry(
             IPath.fromOSString( "org.eclipse.pde.core.requiredPlugins" ) );
 
@@ -408,29 +426,27 @@ public class ServicePluginPDETest
 
     @Test
     @Order( 20 )
-    public void testRunJUnitPluginTestClass_realProject_passes()
+    public void testRunJUnitPluginTestClass_realProject_passes() throws Exception
     {
-        String result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120 );
+        String result = runWithOperation( "testRunJUnitPluginTestClass_realProject_passes",
+            () -> service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120 ) );
         System.out.println( "runJUnitPluginTestClass result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
             "Expected passing tests in result, got: " + result );
     }
 
     @Test
     @Order( 21 )
-    public void testRunJUnitPluginTests_realProject_launches()
+    public void testRunJUnitPluginTests_realProject_launches() throws Exception
     {
-        String result = service.runJUnitPluginTests(
-            TEST_PLUGIN_PROJECT,
-            120 );
+        String result = runWithOperation( "testRunJUnitPluginTests_realProject_launches",
+            () -> service.runJUnitPluginTests(
+                TEST_PLUGIN_PROJECT,
+                120 ) );
         System.out.println( "runJUnitPluginTests result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( !result.contains( "does not exist" ),
             "Got 'does not exist' error - container format is wrong: " + result );
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" )
@@ -440,17 +456,16 @@ public class ServicePluginPDETest
 
     @Test
     @Order( 22 )
-    public void testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce()
+    public void testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce() throws Exception
     {
-        String result = service.runJUnitPluginTestClasses(
-            TEST_PLUGIN_PROJECT,
-            List.of( "com.example.pdetest.SimplePluginTest",
-                     "com.example.pdetest.SecondPluginTest",
-                     "com.example.pdetest.SimplePluginTest" ),
-            120 );
+        String result = runWithOperation( "testRunJUnitPluginTestClasses_realProject_runsSelectedClassesOnce",
+            () -> service.runJUnitPluginTestClasses(
+                TEST_PLUGIN_PROJECT,
+                List.of( "com.example.pdetest.SimplePluginTest",
+                         "com.example.pdetest.SecondPluginTest",
+                         "com.example.pdetest.SimplePluginTest" ),
+                120 ) );
         System.out.println( "runJUnitPluginTestClasses result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( result.contains( "Total: 2" ), result );
         assertTrue( result.contains( "Passed: 2" ), result );
     }
@@ -520,43 +535,40 @@ public class ServicePluginPDETest
 
     @Test
     @Order( 30 )
-    public void testRunJUnitPluginTestClass_selectedPluginsMode_realProject()
+    public void testRunJUnitPluginTestClass_selectedPluginsMode_realProject() throws Exception
     {
-        String result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120, false, false, List.of() );
+        String result = runWithOperation( "testRunJUnitPluginTestClass_selectedPluginsMode_realProject",
+            () -> service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120, false, false, List.of() ) );
         System.out.println( "runJUnitPluginTestClass (selected) result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
             "Expected passing tests in result, got: " + result );
     }
 
     @Test
     @Order( 31 )
-    public void testRunJUnitPluginTestClass_allPluginsMode_realProject()
+    public void testRunJUnitPluginTestClass_allPluginsMode_realProject() throws Exception
     {
-        String result = service.runJUnitPluginTestClass(
-            TEST_PLUGIN_PROJECT,
-            "com.example.pdetest.SimplePluginTest",
-            120, false, true, List.of() );
+        String result = runWithOperation( "testRunJUnitPluginTestClass_allPluginsMode_realProject",
+            () -> service.runJUnitPluginTestClass(
+                TEST_PLUGIN_PROJECT,
+                "com.example.pdetest.SimplePluginTest",
+                120, false, true, List.of() ) );
         System.out.println( "runJUnitPluginTestClass (all) result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ),
             "Expected passing tests in result, got: " + result );
     }
 
     @Test
     @Order( 32 )
-    public void testRunJUnitPluginTests_selectedPluginsMode_realProject()
+    public void testRunJUnitPluginTests_selectedPluginsMode_realProject() throws Exception
     {
-        String result = service.runJUnitPluginTests(
-            TEST_PLUGIN_PROJECT, 120, false, false, List.of() );
+        String result = runWithOperation( "testRunJUnitPluginTests_selectedPluginsMode_realProject",
+            () -> service.runJUnitPluginTests(
+                TEST_PLUGIN_PROJECT, 120, false, false, List.of() ) );
         System.out.println( "runJUnitPluginTests (selected) result: " + result );
-        assumeTrue( !result.contains( "Error" ),
-            "Skipping: PDE launcher not available or project has errors (" + result + ")" );
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" )
             || result.contains( "did not report results" ),
             "Expected test results or timeout, got: " + result );

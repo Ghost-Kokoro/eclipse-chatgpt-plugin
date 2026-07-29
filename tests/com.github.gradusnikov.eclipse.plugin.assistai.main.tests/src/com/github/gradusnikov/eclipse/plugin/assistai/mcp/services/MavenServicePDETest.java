@@ -36,8 +36,8 @@ import org.osgi.framework.Bundle;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.MavenService;
 
 @SuppressWarnings("restriction")
-public class MavenServicePDETest {
-
+public class MavenServicePDETest extends AbstractOperationPDETest
+{
     private static final String TEST_PROJECT_NAME = "MavenServiceTestProject";
     private IProject project;
     private MavenService service;
@@ -131,6 +131,14 @@ public class MavenServicePDETest {
         
         // Create the service under test
         service = ContextInjectionFactory.make(MavenService.class, context);
+
+        // Wire up operation registry using the OSGi service context so that
+        // Operation-backed service calls have a proper context available.
+        org.osgi.framework.BundleContext bundleContext =
+            org.osgi.framework.FrameworkUtil.getBundle( MavenServicePDETest.class ).getBundleContext();
+        org.eclipse.e4.core.contexts.IEclipseContext serviceContext =
+            org.eclipse.e4.core.contexts.EclipseContextFactory.getServiceContext( bundleContext );
+        initOperationRegistry( serviceContext );
     }
     
     /**
@@ -205,15 +213,14 @@ public class MavenServicePDETest {
     }
     
     @Test
-    public void testRunMavenBuild_ValidProject() {
+    public void testRunMavenBuild_ValidProject() throws Exception
+    {
         try {
             // Test with valid project
-            String result = service.runMavenBuild(TEST_PROJECT_NAME, "clean install", "", 0);
-            
+            String result = runWithOperation( "testRunMavenBuild_ValidProject",
+                () -> service.runMavenBuild(TEST_PROJECT_NAME, "clean install", "", 0) );
+
             // Verify result contains expected information
-            // The build's outcome is now reported ("succeeded" / "FAILED" / "is still
-            // running") rather than a bare "started", which said nothing about whether it
-            // worked.
             assertTrue(result.contains("Maven build"), result);
             assertTrue(result.contains("for project"), result);
             assertTrue(result.contains("with goals: clean install"), result);
@@ -230,11 +237,13 @@ public class MavenServicePDETest {
     }
     
     @Test
-    public void testRunMavenBuild_WithProfiles() {
+    public void testRunMavenBuild_WithProfiles() throws Exception
+    {
         try {
             // Test with profiles
-            String result = service.runMavenBuild(TEST_PROJECT_NAME, "clean install", "dev,test", 0);
-            
+            String result = runWithOperation( "testRunMavenBuild_WithProfiles",
+                () -> service.runMavenBuild(TEST_PROJECT_NAME, "clean install", "dev,test", 0) );
+
             // Verify result contains profile information
             assertTrue(result.contains("with goals: clean install"));
             assertTrue(result.contains("and profiles: dev,test"));

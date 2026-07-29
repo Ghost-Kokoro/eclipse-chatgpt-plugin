@@ -39,8 +39,8 @@ import org.osgi.util.tracker.ServiceTracker;
 import com.github.gradusnikov.eclipse.assistai.Activator;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeAnalysisService;
 
-public class CodeAnalysisServicePDETest {
-
+public class CodeAnalysisServicePDETest extends AbstractOperationPDETest
+{
     private static final String TEST_PROJECT_NAME_PREFIX = "CodeAnalysisTestProject";
     private String testProjectName;
     private IProject project;
@@ -127,6 +127,7 @@ public class CodeAnalysisServicePDETest {
         IEclipseContext context = EclipseContextFactory.create();
         context.set(ILog.class, Activator.getDefault().getLog());
         service = ContextInjectionFactory.make(CodeAnalysisService.class, context);
+        initOperationRegistry( context );
     }
     
     @AfterEach
@@ -179,26 +180,21 @@ public class CodeAnalysisServicePDETest {
     }
     
     @Test
-    public void testGetMethodCallHierarchy() throws CoreException, InterruptedException {
+    public void testGetMethodCallHierarchy() throws Exception
+    {
         // Test getting call hierarchy for Caller class
-        String result = service.getMethodCallHierarchy(
-                "com.example.Caller", 
-                "callerMethod", 
-                "", 
-                3);
-        
+        String result = runWithOperation( "testGetMethodCallHierarchy_callerMethod",
+            () -> service.getMethodCallHierarchy( "com.example.Caller", "callerMethod", "", 3 ) );
+
         // Verify the result contains expected information
-        assertTrue(result.contains("# Call Hierarchy for Method: callerMethod"));
-        
+        assertTrue( result.contains( "# Call Hierarchy for Method: callerMethod" ) );
+
         // Test getting call hierarchy for Callee class
-        result = service.getMethodCallHierarchy(
-                "com.example.Callee", 
-                "calleeMethod", 
-                "", 
-                3);
-        
-        assertTrue(result.contains("# Call Hierarchy for Method: calleeMethod"));
-        
+        result = runWithOperation( "testGetMethodCallHierarchy_calleeMethod",
+            () -> service.getMethodCallHierarchy( "com.example.Callee", "calleeMethod", "", 3 ) );
+
+        assertTrue( result.contains( "# Call Hierarchy for Method: calleeMethod" ) );
+
         // Depending on the test environment, you might need to check for specific caller information
         // This can be unreliable in automated tests due to indexing timing
         // assertTrue(result.contains("callerMethod") && result.contains("Caller"));

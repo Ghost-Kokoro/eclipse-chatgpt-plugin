@@ -48,7 +48,7 @@ import com.github.gradusnikov.eclipse.assistai.mcp.services.UnitTestService;
 
 @TestInstance( TestInstance.Lifecycle.PER_CLASS )
 @TestMethodOrder( MethodOrderer.OrderAnnotation.class )
-public class CoverageServicePDETest
+public class CoverageServicePDETest extends AbstractOperationPDETest
 {
     private static final String TEST_PROJECT_NAME = "CoverageTestProject_Temp";
 
@@ -91,6 +91,7 @@ public class CoverageServicePDETest
 
         coverageService = ContextInjectionFactory.make( CoverageService.class, context );
         unitTestService = ContextInjectionFactory.make( UnitTestService.class, context );
+        initOperationRegistry( context );
 
         createTestProject();
     }
@@ -312,14 +313,11 @@ public class CoverageServicePDETest
 
     @Test
     @Order( 10 )
-    public void testRunClassTests_withoutCoverage_passes()
+    public void testRunClassTests_withoutCoverage_passes() throws Exception
     {
-        String result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, false );
+        String result = runWithOperation( "testRunClassTests_withoutCoverage_passes",
+            () -> unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, false ) );
         System.out.println( "runClassTests without coverage: " + result );
-
-        assumeTrue( !result.contains( "Error running tests" ),
-            "Skipping: test runtime does not support nested JUnit launches (" + result + ")" );
-
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ) || result.contains( "OK" ),
             "Expected passing test result, got: " + result );
         assertTrue( !result.contains( "--- Coverage ---" ),
@@ -337,11 +335,9 @@ public class CoverageServicePDETest
         assumeTrue( coverageService.isCoverageAvailable(),
             "Skipping: EclEmma/JaCoCo not installed" );
 
-        String result = unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, true );
+        String result = runWithOperation( "testRunClassTests_withCoverage_includesCoverageInfo",
+            () -> unitTestService.runClassTests( TEST_PROJECT_NAME, "com.example.CalculatorTest", 60, true ) );
         System.out.println( "runClassTests with coverage: " + result );
-
-        assumeTrue( !result.contains( "Error running tests" ),
-            "Skipping: test runtime does not support nested JUnit launches (" + result + ")" );
 
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ) || result.contains( "OK" ),
             "Expected passing test result, got: " + result );
@@ -367,11 +363,9 @@ public class CoverageServicePDETest
         assumeTrue( coverageService.isCoverageAvailable(),
             "Skipping: EclEmma/JaCoCo not installed" );
 
-        String result = unitTestService.runAllTests( TEST_PROJECT_NAME, 60, true );
+        String result = runWithOperation( "testRunAllTests_withCoverage_includesCoverageInfo",
+            () -> unitTestService.runAllTests( TEST_PROJECT_NAME, 60, true ) );
         System.out.println( "runAllTests with coverage: " + result );
-
-        assumeTrue( !result.contains( "Error running tests" ),
-            "Skipping: test runtime does not support nested JUnit launches (" + result + ")" );
 
         assertTrue( result.contains( "Passed" ) || result.contains( "passed" ) || result.contains( "OK" ),
             "Expected passing test result, got: " + result );

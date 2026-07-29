@@ -11,6 +11,7 @@ import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMember;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IType;
+import org.eclipse.pde.internal.launching.launcher.RequirementHelper;
 import org.eclipse.pde.launching.JUnitLaunchConfigurationDelegate;
 
 /**
@@ -29,6 +30,14 @@ import org.eclipse.pde.launching.JUnitLaunchConfigurationDelegate;
  */
 public class SelectedJUnitPluginLaunchDelegate extends JUnitLaunchConfigurationDelegate
 {
+	
+	static {
+		// see super static block; without this it would not
+		// resolve required bundle dependencies correctly when it's not set to use all dependencies
+		RequirementHelper.registerSameRequirementsAsFor(SelectedJUnitPluginLaunchDelegate.LAUNCH_CONFIGURATION_TYPE, "org.eclipse.pde.ui.JunitLaunchConfig");
+	}
+
+	
     public static final String LAUNCH_CONFIGURATION_TYPE =
         "com.github.gradusnikov.eclipse.assistai.selectedJUnitPluginTests";
 

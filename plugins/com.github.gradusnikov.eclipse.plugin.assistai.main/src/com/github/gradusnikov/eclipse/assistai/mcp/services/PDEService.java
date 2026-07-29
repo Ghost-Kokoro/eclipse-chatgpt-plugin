@@ -1,18 +1,16 @@
 package com.github.gradusnikov.eclipse.assistai.mcp.services;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.Optional;
-
-import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
-import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationContext;
-import com.github.gradusnikov.eclipse.assistai.mcp.operations.ProcessOutputSource;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IWorkspace;
@@ -23,10 +21,13 @@ import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.jobs.IJobChangeEvent;
 import org.eclipse.core.runtime.jobs.JobChangeAdapter;
+import org.eclipse.debug.core.DebugException;
 import org.eclipse.debug.core.DebugPlugin;
+import org.eclipse.debug.core.ILaunch;
 import org.eclipse.debug.core.ILaunchConfiguration;
 import org.eclipse.debug.core.ILaunchConfigurationType;
 import org.eclipse.debug.core.ILaunchConfigurationWorkingCopy;
+import org.eclipse.debug.core.ILaunchListener;
 import org.eclipse.debug.core.ILaunchManager;
 import org.eclipse.e4.core.di.annotations.Creatable;
 import org.eclipse.e4.ui.di.UISynchronize;
@@ -47,6 +48,10 @@ import org.eclipse.pde.core.target.ITargetPlatformService;
 import org.eclipse.pde.core.target.LoadTargetDefinitionJob;
 import org.eclipse.pde.launching.IPDELauncherConstants;
 import org.eclipse.swt.widgets.Display;
+
+import com.github.gradusnikov.eclipse.assistai.mcp.operations.Operation;
+import com.github.gradusnikov.eclipse.assistai.mcp.operations.OperationContext;
+import com.github.gradusnikov.eclipse.assistai.mcp.operations.ProcessOutputSource;
 
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -568,55 +573,7 @@ public class PDEService
                                             boolean withCoverage, boolean includeAllPlugins,
                                             List<String> additionalBundles, String launcherName )
     {
-        CountDownLatch latch = new CountDownLatch( 1 );
-        UnitTestService.TestRunResult[] testRunResults = new UnitTestService.TestRunResult[1];
         Optional<Operation> operation = OperationContext.current();
-        AtomicInteger finishedTests = new AtomicInteger();
-
-        TestRunListener listener = new TestRunListener()
-        {
-            private UnitTestService.TestRunResult currentRun = null;
-
-            @Override
-            public void sessionStarted( ITestRunSession session )
-            {
-                currentRun = new UnitTestService.TestRunResult( session.getTestRunName() );
-                operation.ifPresent( op -> op.setProgress( "test session started" ) );
-            }
-
-            @Override
-            public void sessionFinished( ITestRunSession session )
-            {
-                testRunResults[0] = currentRun;
-                latch.countDown();
-            }
-
-            @Override
-            public void testCaseFinished( ITestCaseElement testCaseElement )
-            {
-                if ( currentRun != null )
-                {
-                    String clazz = testCaseElement.getTestClassName();
-                    String testName = testCaseElement.getTestMethodName();
-                    String status = testCaseElement.getTestResult( true ).toString();
-                    String message = testCaseElement.getFailureTrace() != null
-                        ? testCaseElement.getFailureTrace().getTrace() : "";
-                    double time = testCaseElement.getElapsedTimeInSeconds();
-                    currentRun.addTestResult( new UnitTestService.TestResult( clazz, testName, status, message, time ) );
-                    int count = finishedTests.incrementAndGet();
-                    operation.ifPresent( op -> {
-                        op.setProgress( count + " tests finished; last: " + clazz + "#" + testName );
-                        // Publish typed intermediate results so getOperationStatus
-                        // can surface pass/fail counts and detailed test listing
-                        // while the run is still going.
-                        op.setIntermediateResult( "summary", currentRun.toSummary() );
-                        op.setIntermediateResult( "results", currentRun.toResults() );
-                    } );
-                }
-            }
-        };
-
-        JUnitCore.addTestRunListener( listener );
 
         try
         {
@@ -629,7 +586,6 @@ public class PDEService
                 ILaunchConfiguration base = findExistingLaunchConfig( launchManager, launcherName );
                 if ( base == null )
                 {
-                    JUnitCore.removeTestRunListener( listener );
                     return "Error: Launch configuration not found: " + launcherName;
                 }
                 workingCopy = base.getWorkingCopy();
@@ -646,7 +602,6 @@ public class PDEService
 
                 if ( type == null )
                 {
-                    JUnitCore.removeTestRunListener( listener );
                     return "Error: PDE JUnit Plug-in Test launch configuration type '" + launchTypeId
                         + "' not found. Ensure the required PDE launcher is available.";
                 }
@@ -762,92 +717,221 @@ public class PDEService
                 }
             }
 
+            // uncomment this block when you want to debug the launch
+            // ---
+//            String previousArgs = workingCopy.getAttribute(IJavaLaunchConfigurationConstants.ATTR_VM_ARGUMENTS, "");
+//            if (!previousArgs.contains("-agentlib:jdwp=transport=dt_socket")) {
+//            	workingCopy.setAttribute( IJavaLaunchConfigurationConstants.ATTR_VM_ARGUMENTS,
+//            			(previousArgs.length() > 0 ? previousArgs + " " : "")
+//            			+ "-agentlib:jdwp=transport=dt_socket,server=y,address=*:8456,suspend=y" );
+//            }
+            // ---
+
             ILaunchConfiguration configuration = workingCopy.doSave();
+
+            // Log workspace location so it's visible in test output and MCP tool results
+            String wsLocation = configuration.getAttribute( IPDELauncherConstants.LOCATION, (String) null );
+            assert wsLocation != null;
+            System.out.println( "[PDEService] Test workspace: " + wsLocation );
 
             boolean useCoverage = withCoverage && coverageService.isCoverageAvailable();
             String launchMode = useCoverage ? coverageService.getCoverageLaunchMode() : ILaunchManager.RUN_MODE;
 
-            long launchStartTime = System.currentTimeMillis();
-            CoreException[] launchError = new CoreException[1];
-            org.eclipse.debug.core.ILaunch[] launchRef = new org.eclipse.debug.core.ILaunch[1];
-            sync.asyncExec( () -> {
-                try
-                {
-                    launchRef[0] = configuration.launch( launchMode, new NullProgressMonitor() );
-                }
-                catch ( CoreException e )
-                {
-                    launchError[0] = e;
-                    latch.countDown();
-                    logger.log( org.eclipse.core.runtime.Status.error( "Error launching plug-in tests", e ) );
-                }
-            } );
+            CountDownLatch latch = new CountDownLatch( 1 );
+            UnitTestService.TestRunResult[] testRunResults = new UnitTestService.TestRunResult[1];
+            AtomicInteger finishedTests = new AtomicInteger();
 
-            // How long the CALLER is prepared to wait is the framework's business: once its
-            // inline wait elapses it hands the caller an operationId and this thread keeps
-            // going. The bound here is only a backstop against a JVM that never reports and
-            // never dies.
-            // Run as an MCP operation, the caller has already been handed an operationId and
-            // the only bound left is a backstop. Called directly - from a test, an agent -
-            // there is no framework waiting for us, so the caller's timeout is still the bound.
-            long waitBoundMillis = operation.isPresent()
-                    ? TimeUnit.MINUTES.toMillis( MAX_TEST_RUN_MINUTES )
-                    : TimeUnit.SECONDS.toMillis( timeout );
-            long deadline = System.currentTimeMillis() + waitBoundMillis;
-            Display display = Display.getCurrent();
-            boolean completed = false;
-            boolean attached = false;
-            while ( !completed && System.currentTimeMillis() < deadline )
+            TestRunListener listener = new TestRunListener()
             {
-                if ( display != null && !display.isDisposed() )
+                private UnitTestService.TestRunResult currentRun = null;
+
+                @Override
+                public void sessionStarted( ITestRunSession session )
                 {
-                    while ( display.readAndDispatch() )
+                    currentRun = new UnitTestService.TestRunResult( session.getTestRunName() );
+                    operation.ifPresent( op -> op.setProgress( "test session started" ) );
+                }
+
+                @Override
+                public void sessionFinished( ITestRunSession session )
+                {
+                    testRunResults[0] = currentRun;
+                    latch.countDown();
+                }
+
+                @Override
+                public void testCaseFinished( ITestCaseElement testCaseElement )
+                {
+                    if ( currentRun != null )
                     {
+                        String clazz = testCaseElement.getTestClassName();
+                        String testName = testCaseElement.getTestMethodName();
+                        String status = testCaseElement.getTestResult( true ).toString();
+                        String message = testCaseElement.getFailureTrace() != null
+                            ? testCaseElement.getFailureTrace().getTrace() : "";
+                        double time = testCaseElement.getElapsedTimeInSeconds();
+                        currentRun.addTestResult( new UnitTestService.TestResult( clazz, testName, status, message, time ) );
+                        int count = finishedTests.incrementAndGet();
+                        operation.ifPresent( op -> {
+                            op.setProgress( count + " tests finished; last: " + clazz + "#" + testName );
+                            // Publish typed intermediate results so getOperationStatus
+                            // can surface pass/fail counts and detailed test listing
+                            // while the run is still going.
+                            op.setIntermediateResult( "summary", currentRun.toSummary() );
+                            op.setIntermediateResult( "results", currentRun.toResults() );
+                        } );
                     }
                 }
-                if ( !attached && launchRef[0] != null )
+            };
+
+            // Equinox can request a restart (exit code 23 = IApplication.EXIT_RESTART) on the
+            // first boot of a workspace when it needs to rewire bundles (reused workspace/config).
+            // Allow the automatic second launch and use it
+
+            // Watch for the Equinox-auto-restart launch: when our launch exits with code 23,
+            // PDE's LaunchListener.launchTerminated() synchronously calls doRestart(), which
+            // creates a new ILaunch for the same config with IPDEConstants.RESTART=true and
+            // registers it with the launch manager. We capture it here so we can track it.
+            // We only capture it when the original launch has actually exited with code 23.
+            String configName = configuration.getName();
+            org.eclipse.debug.core.ILaunch[] launchRef = new org.eclipse.debug.core.ILaunch[1];
+            org.eclipse.debug.core.ILaunch[] restartLaunchRef = new org.eclipse.debug.core.ILaunch[1];
+            ILaunchListener restartLaunchListener = new ILaunchListener()
+            {
+                @Override
+                public void launchAdded( ILaunch launch )
                 {
-                    // The launch is asynchronous, so it only exists once the UI thread has run
-                    // it. Streams the test instance's output into the operation and makes
-                    // cancelling it terminate the JVM.
-                    attached = true;
-                    org.eclipse.debug.core.ILaunch launched = launchRef[0];
-                    operation.ifPresent( op -> ProcessOutputSource.attach( op, launched ) );
+                    try
+                    {
+                        ILaunchConfiguration lc = launch.getLaunchConfiguration();
+                        if ( launchRef[0] != null && launchRef[0].isTerminated()
+                                && getRawExitCode( launchRef[0] ) == org.eclipse.equinox.app.IApplication.EXIT_RESTART
+                                && lc != null && lc.getName().equals( configName )
+                                && lc.getAttribute( org.eclipse.pde.internal.launching.IPDEConstants.RESTART, false ))
+                        {
+                            restartLaunchRef[0] = launch;
+                        }
+                    }
+                    catch ( CoreException ignored ) {}
                 }
-                completed = latch.await( 100, TimeUnit.MILLISECONDS );
-                if ( !completed && launchRef[0] != null && launchRef[0].isTerminated() )
+                @Override public void launchRemoved( ILaunch launch ) {}
+                @Override public void launchChanged( ILaunch launch ) {}
+            };
+
+            ILaunchManager launchManagerForListener = DebugPlugin.getDefault().getLaunchManager();
+            launchManagerForListener.addLaunchListener( restartLaunchListener );
+            JUnitCore.addTestRunListener( listener );
+            long launchStartTime = System.currentTimeMillis();
+            CoreException[] launchError = new CoreException[1];
+            try
+            {
+                sync.asyncExec( () -> {
+                    try
+                    {
+                        launchRef[0] = configuration.launch( launchMode, new NullProgressMonitor() );
+                    }
+                    catch ( CoreException e )
+                    {
+                        launchError[0] = e;
+                        latch.countDown();
+                        logger.log( org.eclipse.core.runtime.Status.error( "Error launching plug-in tests", e ) );
+                    }
+                } );
+
+                // How long the CALLER is prepared to wait is the framework's business: once its
+                // inline wait elapses it hands the caller an operationId and this thread keeps
+                // going. The bound here is only a backstop against a JVM that never reports and
+                // never dies.
+                // Run as an MCP operation, the caller has already been handed an operationId and
+                // the only bound left is a backstop. Called directly - from a test, an agent -
+                // there is no framework waiting for us, so the caller's timeout is still the bound.
+                long waitBoundMillis = operation.isPresent()
+                        ? TimeUnit.MINUTES.toMillis( MAX_TEST_RUN_MINUTES )
+                        : TimeUnit.SECONDS.toMillis( timeout );
+                long deadline = System.currentTimeMillis() + waitBoundMillis;
+                Display display = Display.getCurrent();
+                boolean completed = false;
+                boolean attached = false;
+                while ( !completed && System.currentTimeMillis() < deadline )
                 {
-                    completed = true;
+                    if ( display != null && !display.isDisposed() )
+                    {
+                        while ( display.readAndDispatch() )
+                        {
+                        }
+                    }
+                    if ( !attached && launchRef[0] != null )
+                    {
+                        // The launch is asynchronous, so it only exists once the UI thread has run
+                        // it. Streams the test instance's output into the operation and makes
+                        // canceling it terminate the JVM.
+                        attached = true;
+                        org.eclipse.debug.core.ILaunch launched = launchRef[0];
+                        operation.ifPresent( op -> ProcessOutputSource.attach( op, launched ) );
+                    }
+                    completed = latch.await( 100, TimeUnit.MILLISECONDS );
+                    if ( !completed && launchRef[0] != null && launchRef[0].isTerminated() )
+                    {
+                        // When Equinox needs to rewire bundles it exits with code 23 and PDE's
+                        // LaunchListener synchronously creates a restart launch before marking
+                        // the original terminated. Switch tracking to the restart launch if
+                        // present and the exit code confirms a restart was requested.
+                        if ( testRunResults[0] == null
+                            && getRawExitCode( launchRef[0] ) == org.eclipse.equinox.app.IApplication.EXIT_RESTART
+                            && restartLaunchRef[0] != null )
+                        {
+                            String msg = "[PDEService] Equinox requested restart (exit 23) —"
+                                + " bundle cache is now warm, following auto-restarted launch";
+                            System.out.println( msg );
+                            operation.ifPresent( op -> op.setProgress( msg ) );
+                            launchRef[0] = restartLaunchRef[0];
+                            restartLaunchRef[0] = null;
+                            attached = false; // re-attach process output to the new launch
+                        }
+                        else
+                        {
+                            completed = true;
+                        }
+                    }
                 }
-            }
 
-            if ( launchError[0] != null )
+                if ( launchError[0] != null )
+                {
+                    return "Error launching plug-in tests: " + launchError[0].getMessage();
+                }
+                if ( !completed )
+                {
+                    return "Error: the test run did not report results in time.";
+                }
+
+                // The test session can finish just before the workbench process releases
+                // its workspace lock. Wait briefly so an immediate rerun of the same
+                // selection can safely reuse its workspace.
+                waitForLaunchTermination( launchRef[0] );
+
+                if ( testRunResults[0] == null )
+                {
+                    return "Error: No test results collected."
+                            + "\nThe test run may have failed to start."
+                            + "\nCheck the console output of the launch or the workspace log file."
+                            + (launchRef[0] != null ? "\n\nEclipse exit code: " + getExitCode(launchRef[0]) : "");
+                }
+
+                String results = testRunResults[0].toString();
+
+                if ( useCoverage )
+                {
+                    String execFile = coverageService.waitForLatestCoverageFile( launchStartTime, 10000 );
+                    results += coverageService.formatCoverageInfo( execFile, javaProject.getProject().getName() );
+                }
+
+                return results;
+            }
+            finally
             {
-                return "Error launching plug-in tests: " + launchError[0].getMessage();
+                JUnitCore.removeTestRunListener( listener );
+                launchManagerForListener.removeLaunchListener( restartLaunchListener );
             }
-            if ( !completed )
-            {
-                return "Error: the test run did not report results in time.";
-            }
-            if ( testRunResults[0] == null )
-            {
-                return "Error: No test results collected. The test run may have failed to start.";
-            }
-
-            // The test session can finish just before the workbench process releases
-            // its workspace lock. Wait briefly so an immediate rerun of the same
-            // selection can safely reuse its workspace.
-            waitForLaunchTermination( launchRef[0] );
-
-            String results = testRunResults[0].toString();
-
-            if ( useCoverage )
-            {
-                String execFile = coverageService.waitForLatestCoverageFile( launchStartTime, 10000 );
-                results += coverageService.formatCoverageInfo( execFile, javaProject.getProject().getName() );
-            }
-
-            return results;
         }
         catch ( InterruptedException e )
         {
@@ -861,13 +945,31 @@ public class PDEService
             logger.error( "Error running plug-in tests", e );
             return "Error running plug-in tests: " + e.getMessage();
         }
-        finally
-        {
-            JUnitCore.removeTestRunListener( listener );
-        }
     }
 
-    private void waitForLaunchTermination( org.eclipse.debug.core.ILaunch launch )
+	private int getRawExitCode( ILaunch iLaunch )
+    {
+        return Arrays.stream( iLaunch.getProcesses() )
+            .mapToInt( process -> {
+                try { return process.getExitValue(); }
+                catch ( DebugException e ) { return -1; }
+            } )
+            .findFirst()
+            .orElse( -1 );
+    }
+
+    private String getExitCode(ILaunch iLaunch) {
+    	return Arrays.asList(iLaunch.getProcesses()).stream().map((process) -> {
+    		try {
+				return String.valueOf(process.getExitValue()) + " (" + process.getLabel() + ")";
+			} catch (DebugException e) {
+				logger.log(org.eclipse.core.runtime.Status.error( "Error requesting exit code from processterminate on a launch that didn't terminate nicely in a while", e ));
+				return "Exception requesting exit code from process '" + process.getLabel() + "':" + e.getMessage();
+			}
+    	}).collect(Collectors.joining("\n"));
+	}
+
+	private void waitForLaunchTermination( org.eclipse.debug.core.ILaunch launch )
         throws InterruptedException
     {
         if ( launch == null || launch.isTerminated() )
@@ -875,10 +977,20 @@ public class PDEService
             return;
         }
 
-        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 10 );
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 30 );
+        long waitNicelyDeadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis( 20 );
         Display display = Display.getCurrent();
         while ( !launch.isTerminated() && System.currentTimeMillis() < deadline )
         {
+        	if (System.currentTimeMillis() > waitNicelyDeadline) 
+        	{
+        		waitNicelyDeadline = Long.MAX_VALUE;
+        		try {
+					launch.terminate();
+				} catch (DebugException e) {
+					logger.log(org.eclipse.core.runtime.Status.error( "Error requesting terminate on a launch that didn't terminate nicely in a while", e ));
+				}
+        	}
             if ( display != null && !display.isDisposed() )
             {
                 while ( display.readAndDispatch() )
