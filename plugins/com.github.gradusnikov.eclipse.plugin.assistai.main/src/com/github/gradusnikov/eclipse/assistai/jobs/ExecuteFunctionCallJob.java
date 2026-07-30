@@ -277,13 +277,15 @@ public class ExecuteFunctionCallJob extends Job
     private String cacheStructuredRead( Object structuredContent )
     {
         ResourceReadResult read = ResourceReadResult.fromStructuredContent( structuredContent );
-        if ( read == null || !read.isCacheable() )
+        if ( read == null || !read.isCacheable()
+                || read.projectName() == null || read.projectName().isBlank()
+                || read.filePath() == null || read.filePath().isBlank() )
         {
             return null;
         }
 
         IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject( read.projectName() );
-        if ( project == null || !project.exists() )
+        if ( !project.exists() )
         {
             return null;
         }
