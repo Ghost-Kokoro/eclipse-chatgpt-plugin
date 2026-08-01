@@ -29,7 +29,10 @@
   <bundle id="io.modelcontextprotocol.sdk.mcp-core" version="0.0.0">
     <category name="assistai-deps"/>
   </bundle>
-
+  <bundle id="io.modelcontextprotocol.sdk.mcp-json-jackson2" version="0.0.0">
+    <category name="assistai-deps"/>
+  </bundle>
+  
   <!-- Reactor / Reactive Streams -->
   <bundle id="io.projectreactor.reactor-core" version="0.0.0">
     <category name="assistai-deps"/>
