@@ -261,7 +261,6 @@ public class CodeAnalysisServicePDETest {
         
         // Verify markers were created
         IMarker[] markers = project.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
-        System.out.println("Found " + markers.length + " markers");
         
         // Skip if the Java builder didn't produce markers (e.g. in headless Tycho runner
         // without a full JDT workspace initialised)
@@ -273,8 +272,6 @@ public class CodeAnalysisServicePDETest {
                 testProjectName, 
                 "ALL", 
                 50);
-        
-        System.out.println("Compilation errors result: " + result);
         
         // Assert on the reported structure rather than on how it is worded.
         assertTrue(result.scope().contains(testProjectName));
@@ -303,15 +300,11 @@ public class CodeAnalysisServicePDETest {
                 "ERROR", 
                 50);
         
-        System.out.println("ERROR severity result: " + errorResult);
-        
         // Test getting only WARNING severity problems
         CompilationProblemsResponse warningResult = service.getCompilationErrors(
                 testProjectName, 
                 "WARNING", 
                 50);
-        
-        System.out.println("WARNING severity result: " + warningResult);
         
         // A severity filter must not leak the other severities into the counts. Whether
         // any warnings exist at all is environment-dependent, so only the filtering is
@@ -349,7 +342,6 @@ public class CodeAnalysisServicePDETest {
                 "No error markers generated - Java builder not active in this environment");
 
         CompilationProblemsResponse result = service.getCompilationErrors(testProjectName, "ALL", 50);
-        System.out.println("getCompilationErrors (with quick fixes) result:\n" + result);
 
         var problem = result.files().get(0).problems().get(0);
         assertTrue(problem.markerId() > 0, "executeQuickFix needs a marker id");
@@ -387,7 +379,6 @@ public class CodeAnalysisServicePDETest {
         // Obtain marker ID the same way an agent would: via getCompilationErrors.
         // No parsing - the id and the fix index are fields.
         CompilationProblemsResponse errorsResult = service.getCompilationErrors(testProjectName, "ALL", 50);
-        System.out.println("getCompilationErrors before apply:\n" + errorsResult);
         assertTrue(errorsResult.totalProblems() > 0, "Errors result must report a problem");
 
         long markerId = -1L;
@@ -414,7 +405,6 @@ public class CodeAnalysisServicePDETest {
         assertNotEquals(-1L, markerId, "Should have found a valid marker ID");
 
         QuickFixResponse applyResult = service.executeQuickFix(markerId, importIndex);
-        System.out.println("executeQuickFix result: " + applyResult);
 
         assertEquals(markerId, applyResult.markerId(), "the response names the marker it acted on");
         assertEquals(importIndex, applyResult.requestedIndex());
@@ -431,7 +421,6 @@ public class CodeAnalysisServicePDETest {
 
             file.refreshLocal(IResource.DEPTH_ZERO, monitor);
             String fileContent = new String(file.getContents(true).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            System.out.println("File content after fix:\\n" + fileContent);
             assertTrue(fileContent.contains("import java.util.ArrayList"),
                     "File on disk should contain the added import after fix is applied. File content: " + fileContent);
         }
@@ -444,7 +433,6 @@ public class CodeAnalysisServicePDETest {
     @Test
     public void testExecuteQuickFix_UnknownMarkerId() {
         QuickFixResponse result = service.executeQuickFix(Long.MAX_VALUE, 0);
-        System.out.println("executeQuickFix (bad id) result: " + result);
 
         assertEquals(QuickFixResponse.Status.MARKER_NOT_FOUND, result.status());
         assertFalse(result.changedResource());

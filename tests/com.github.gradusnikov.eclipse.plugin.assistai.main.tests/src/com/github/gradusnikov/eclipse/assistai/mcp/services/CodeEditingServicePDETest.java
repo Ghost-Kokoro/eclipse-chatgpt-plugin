@@ -235,8 +235,6 @@ public class CodeEditingServicePDETest {
         String replacementContent = "New Line A\nNew Line B";
         EditResult result = replaceLines("src/testFile.txt", replacementContent, 2, 4);
         
-        System.out.println( result );
-        
         // Read the updated file content
         String updatedContent = ResourceUtilities.readFileContent(testFile);
         
@@ -592,8 +590,6 @@ public class ApplicationNew {
 		 replaceLines("src/testFile.txt", replacement, startLine, endLine);
 		 
 		 String updatedContent = ResourceUtilities.readFileContent(testFile);
-		 System.out.println("------------");
-		 System.out.println(updatedContent);
 	}
     @Test
     public void testRefactorExtractTypeToNewFile() throws Exception
