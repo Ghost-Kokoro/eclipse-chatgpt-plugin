@@ -45,7 +45,7 @@ a `status` a caller can branch on, and `diagnostics` carrying a coded
 | [eclipse-coder](#eclipse-coder) | 21 |
 | [eclipse-context](#eclipse-context) | 7 |
 | [eclipse-git](#eclipse-git) | 15 |
-| [eclipse-ide](#eclipse-ide) | 35 |
+| [eclipse-ide](#eclipse-ide) | 39 |
 | [eclipse-pde](#eclipse-pde) | 6 |
 | [eclipse-runner](#eclipse-runner) | 17 |
 | [memory](#memory) | 2 |
@@ -803,6 +803,17 @@ Returns the source of specific method(s) of one class. Accepts comma-separated m
 
 **Returns** [`MethodSourceResponse`](#methodsourceresponse)
 
+### `getPackageSummary` *(long)*
+
+Returns a table-of-contents for a Java package: every type's name, kind (class/interface/enum/record), Javadoc first sentence, method count, field count, and implemented interfaces — all in one call. Use this after searchTypes or getWorkspaceOverview identifies a relevant package, to understand what the package contains without reading each file individually. The Javadoc summaries help you decide which types are relevant to the user's request. Follow up with getClassOutline or getMethodSource on specific types of interest.
+
+| Parameter | | Description |
+|---|---|---|
+| `packageName` | \* | Fully qualified package name (e.g. 'com.example.payment', 'org.acme.auth.service') |
+| `projectName` |  | Optional project name to narrow the search. Useful in multi-project workspaces. |
+
+**Returns** [`PackageSummaryResponse`](#packagesummaryresponse)
+
 ### `getProjectDependencies` *(long)*
 
 Lists the dependencies one project's pom declares. These come from the Maven project model - what the pom declares after inheritance from its parent - and not from the resolved transitive graph; for the fully resolved form use getEffectivePom. version is null when the pom does not state one here, which is the ordinary case for a dependency managed by a parent's dependencyManagement. scope is 'compile' when the pom omits it, the default Maven itself applies.
@@ -854,6 +865,17 @@ Retrieves the type hierarchy of a Java class or interface as three separate list
 | `fullyQualifiedClassName` | \* | The fully qualified name of the class (e.g., 'com.example.MyClass') |
 
 **Returns** [`TypeHierarchyResponse`](#typehierarchyresponse)
+
+### `getWorkspaceOverview` *(long)*
+
+Returns a high-level architectural map of the workspace: all projects, their source packages, and the type names in each package. Use this as the FIRST tool when orienting in an unfamiliar codebase or when you need to understand the overall project structure before making changes. Typical workflow: getWorkspaceOverview -> identify relevant packages -> getPackageSummary on those packages -> getClassOutline/getMethodSource on specific types. For large workspaces, use projectFilter to focus on specific projects.
+
+| Parameter | | Description |
+|---|---|---|
+| `projectFilter` |  | Optional substring to filter projects by name (e.g. 'payment' shows only payment-related projects, 'service' shows service projects). Leave empty to see all projects. |
+| `maxPackagesPerProject` |  | Maximum number of packages to show per project (default: 50). Lower this for large projects to get a quick overview. |
+
+**Returns** [`WorkspaceOverviewResponse`](#workspaceoverviewresponse)
 
 ### `listMavenProjects`
 
@@ -942,6 +964,29 @@ Search and replace across multiple files in the workspace using Eclipse's text s
 | `fileNamePatterns` |  | Optional comma-separated file name patterns (e.g. "*.java,*.xml"). If omitted, all files are searched. |
 
 **Returns** [`SearchReplaceResponse`](#searchreplaceresponse)
+
+### `searchMethods` *(long)*
+
+Searches for methods by name pattern across the entire workspace. Use this when you know (or can guess) a method name but don't know which class contains it. For example, if a user says 'fix the error handling', search for '*error*' or 'handle*' to find relevant methods. Supports wildcards (* and ?), CamelCase matching, and prefix matching. Optionally filter by declaring type to narrow results. Returns the method name, declaring class, package, parameter types, and return type. After finding a method, use getMethodSource to read its implementation.
+
+| Parameter | | Description |
+|---|---|---|
+| `pattern` | \* | Method name pattern. Supports: wildcards (handle*Error, get*, *Payment, process*), CamelCase (pP -> processPayment — requires 2+ uppercase letters), or prefix (handle -> handleError, handleTimeout, ...). Note: CamelCase and prefix patterns are case-sensitive; use wildcards (*foo*) for case-insensitive matching. |
+| `declaringTypePattern` |  | Optional pattern to filter by declaring type name (e.g. '*Service', 'Payment*'). Useful when the method name is common (e.g. 'get*') and you want to narrow to specific classes. |
+| `maxResults` |  | Maximum number of results to return (default: 100) |
+
+**Returns** [`MethodSearchResponse`](#methodsearchresponse)
+
+### `searchTypes` *(long)*
+
+Searches for Java types (classes, interfaces, enums, records, annotations) by name pattern. This is the primary discovery tool — use it FIRST when a user mentions a concept (e.g. 'payment handling', 'authentication') and you need to find which classes implement it. Supports wildcards (* and ?), CamelCase matching (e.g. 'PS' finds 'PaymentService'), and prefix matching. Prefer this over fileSearch for finding types: it searches the JDT index (instant) rather than file contents, and supports CamelCase patterns that text search cannot. After finding types, use getClassOutline or getPackageSummary to understand them, then getMethodSource to read specific methods.
+
+| Parameter | | Description |
+|---|---|---|
+| `pattern` | \* | Type name pattern. Supports: wildcards (*Payment*, *Service, Error*), CamelCase (PS -> PaymentService, TxH -> TransactionHandler, CC -> CreditCard), prefix (Payment -> PaymentService, PaymentProcessor, ...), or package-qualified (com.example.*Service). Tips: try multiple patterns for a concept — e.g. for 'payment' try '*Payment*', '*Billing*', '*Transaction*'. |
+| `maxResults` |  | Maximum number of results to return (default: 100) |
+
+**Returns** [`TypeSearchResponse`](#typesearchresponse)
 
 ### `updateMavenProject` *(long)*
 
@@ -1683,6 +1728,16 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `notFound` | `String`[] |
 | `diagnostics` | [`Diagnostic`](#diagnostic)[] |
 
+### `PackageSummaryResponse`
+
+| Field | Type |
+|---|---|
+| `packageName` | `String` |
+| `projectName` | `String` |
+| `totalTypes` | `int` |
+| `types` | [`PackageSummaryResponseTypeSummary`](#packagesummaryresponsetypesummary)[] |
+| `summaryText` | `String` |
+
 ### `MavenDependenciesResponse`
 
 | Field | Type |
@@ -1728,6 +1783,16 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `superclasses` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
 | `interfaces` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
 | `subtypes` | [`TypeHierarchyResponseHierarchyType`](#typehierarchyresponsehierarchytype)[] |
+| `summaryText` | `String` |
+
+### `WorkspaceOverviewResponse`
+
+| Field | Type |
+|---|---|
+| `totalProjects` | `int` |
+| `totalPackages` | `int` |
+| `totalTypes` | `int` |
+| `projects` | [`WorkspaceOverviewResponseProjectOverview`](#workspaceoverviewresponseprojectoverview)[] |
 | `summaryText` | `String` |
 
 ### `MavenProjectListResponse`
@@ -1791,6 +1856,26 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `totalMatches` | `int` |
 | `totalReplacements` | `int` |
 | `files` | [`SearchReplaceResponseFileReplacement`](#searchreplaceresponsefilereplacement)[] |
+| `summaryText` | `String` |
+
+### `MethodSearchResponse`
+
+| Field | Type |
+|---|---|
+| `pattern` | `String` |
+| `totalMatches` | `int` |
+| `methods` | [`MethodSearchResponseMethodMatch`](#methodsearchresponsemethodmatch)[] |
+| `truncated` | `boolean` |
+| `summaryText` | `String` |
+
+### `TypeSearchResponse`
+
+| Field | Type |
+|---|---|
+| `pattern` | `String` |
+| `totalMatches` | `int` |
+| `types` | [`TypeSearchResponseTypeMatch`](#typesearchresponsetypematch)[] |
+| `truncated` | `boolean` |
 | `summaryText` | `String` |
 
 ### `ActiveTargetResponse`
@@ -2273,6 +2358,17 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `range` | [`ContentRange`](#contentrange) |
 | `source` | `String` |
 
+### `PackageSummaryResponseTypeSummary`
+
+| Field | Type |
+|---|---|
+| `simpleName` | `String` |
+| `typeKind` | `String` |
+| `javadocSummary` | `String` |
+| `methodCount` | `int` |
+| `fieldCount` | `int` |
+| `superInterfaces` | `String`[] |
+
 ### `MavenDependenciesResponseMavenDependency`
 
 | Field | Type |
@@ -2323,6 +2419,15 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `fullyQualifiedName` | `String` |
 | `projectName` | `String` |
 | `filePath` | `String` |
+
+### `WorkspaceOverviewResponseProjectOverview`
+
+| Field | Type |
+|---|---|
+| `projectName` | `String` |
+| `packageCount` | `int` |
+| `typeCount` | `int` |
+| `packages` | [`WorkspaceOverviewResponsePackageOverview`](#workspaceoverviewresponsepackageoverview)[] |
 
 ### `MavenProjectListResponseMavenProject`
 
@@ -2407,6 +2512,27 @@ Reads the content of the given web page and returns it as markdown, together wit
 | `filePath` | `String` |
 | `matchesFound` | `int` |
 | `replacementsMade` | `int` |
+
+### `MethodSearchResponseMethodMatch`
+
+| Field | Type |
+|---|---|
+| `methodName` | `String` |
+| `declaringType` | `String` |
+| `packageName` | `String` |
+| `projectName` | `String` |
+| `returnType` | `String` |
+| `parameterTypes` | `String`[] |
+
+### `TypeSearchResponseTypeMatch`
+
+| Field | Type |
+|---|---|
+| `fullyQualifiedName` | `String` |
+| `simpleName` | `String` |
+| `packageName` | `String` |
+| `projectName` | `String` |
+| `typeKind` | `String` |
 
 ### `ActiveTargetResponseTargetStatus`
 
@@ -2561,6 +2687,14 @@ Reads the content of the given web page and returns it as markdown, together wit
 ### `ProjectLayoutResponseNodeType`
 
 `PROJECT` \| `FOLDER` \| `FILE`
+
+### `WorkspaceOverviewResponsePackageOverview`
+
+| Field | Type |
+|---|---|
+| `packageName` | `String` |
+| `typeCount` | `int` |
+| `typeNames` | `String`[] |
 
 ### `McpSchemaRole`
 

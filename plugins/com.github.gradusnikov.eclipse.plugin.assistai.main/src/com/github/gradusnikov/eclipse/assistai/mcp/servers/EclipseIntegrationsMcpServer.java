@@ -17,8 +17,10 @@ import com.github.gradusnikov.eclipse.assistai.mcp.results.JavaDocResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.MarkdownOutlineResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenDependenciesResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.MavenProjectListResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.MethodSearchResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.MethodSourceResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.OpenProjectResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.PackageSummaryResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectLayoutResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectListResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.ProjectPropertiesResponse;
@@ -30,9 +32,12 @@ import com.github.gradusnikov.eclipse.assistai.mcp.results.TestClassesResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.TestRunResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeHierarchyResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeResolutionResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.TypeSearchResponse;
+import com.github.gradusnikov.eclipse.assistai.mcp.results.WorkspaceOverviewResponse;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.Tool;
 import com.github.gradusnikov.eclipse.assistai.mcp.annotations.ToolParam;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeAnalysisService;
+import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeDiscoveryService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.CodeEditingService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.ConsoleService;
 import com.github.gradusnikov.eclipse.assistai.mcp.services.EditorService;
@@ -88,6 +93,10 @@ public class EclipseIntegrationsMcpServer
 
     @Inject
     private MarkdownService     markdownService;
+
+    @Inject
+    private CodeDiscoveryService codeDiscoveryService;
+
 
     @Tool( name = "formatCode", description = "Formats code according to the current Eclipse formatter settings.", type = "object" )
     public String formatCode( @ToolParam( name = "code", description = "The code to be formatted", required = true )
@@ -636,4 +645,118 @@ public class EclipseIntegrationsMcpServer
         }
         return fileNamePatterns.trim().split( "\\s*,\\s*" );
     }
+
+    private static Integer parseOptionalInt( String value )
+    {
+        if ( value == null || value.isBlank() )
+        {
+            return null;
+        }
+        try
+        {
+            return Integer.parseInt( value.trim() );
+        }
+        catch ( NumberFormatException e )
+        {
+            return null;
+        }
+    }
+
+
+    @Tool( name = "searchTypes",
+           longExecution = true,
+           description = "Searches for Java types (classes, interfaces, enums, records, annotations) by name pattern. "
+                       + "This is the primary discovery tool — use it FIRST when a user mentions a concept (e.g. 'payment handling', "
+                       + "'authentication') and you need to find which classes implement it. "
+                       + "Supports wildcards (* and ?), CamelCase matching (e.g. 'PS' finds 'PaymentService'), and prefix matching. "
+                       + "Prefer this over fileSearch for finding types: it searches the JDT index (instant) rather than file contents, "
+                       + "and supports CamelCase patterns that text search cannot. "
+                       + "After finding types, use getClassOutline or getPackageSummary to understand them, "
+                       + "then getMethodSource to read specific methods.",
+           type = "object",
+           outputType = TypeSearchResponse.class )
+    public TypeSearchResponse searchTypes(
+            @ToolParam( name = "pattern", description = "Type name pattern. Supports: "
+                                                      + "wildcards (*Payment*, *Service, Error*), "
+                                                      + "CamelCase (PS -> PaymentService, TxH -> TransactionHandler, CC -> CreditCard), "
+                                                      + "prefix (Payment -> PaymentService, PaymentProcessor, ...), "
+                                                      + "or package-qualified (com.example.*Service). "
+                                                      + "Tips: try multiple patterns for a concept — e.g. for 'payment' try '*Payment*', '*Billing*', '*Transaction*'.", required = true )
+            String pattern,
+            @ToolParam( name = "maxResults", description = "Maximum number of results to return (default: 100)", required = false )
+            String maxResults )
+    {
+        Integer limit = parseOptionalInt( maxResults );
+        return codeDiscoveryService.searchTypes( pattern, limit );
+    }
+
+    @Tool( name = "searchMethods",
+           longExecution = true,
+           description = "Searches for methods by name pattern across the entire workspace. "
+                       + "Use this when you know (or can guess) a method name but don't know which class contains it. "
+                       + "For example, if a user says 'fix the error handling', search for '*error*' or 'handle*' to find relevant methods. "
+                       + "Supports wildcards (* and ?), CamelCase matching, and prefix matching. "
+                       + "Optionally filter by declaring type to narrow results. "
+                       + "Returns the method name, declaring class, package, parameter types, and return type. "
+                       + "After finding a method, use getMethodSource to read its implementation.",
+           type = "object",
+           outputType = MethodSearchResponse.class )
+    public MethodSearchResponse searchMethods(
+            @ToolParam( name = "pattern", description = "Method name pattern. Supports: "
+                                                      + "wildcards (handle*Error, get*, *Payment, process*), "
+                                                      + "CamelCase (pP -> processPayment — requires 2+ uppercase letters), "
+                                                      + "or prefix (handle -> handleError, handleTimeout, ...). "
+                                                      + "Note: CamelCase and prefix patterns are case-sensitive; use wildcards (*foo*) for case-insensitive matching.", required = true )
+            String pattern,
+            @ToolParam( name = "declaringTypePattern", description = "Optional pattern to filter by declaring type name (e.g. '*Service', 'Payment*'). "
+                                                                   + "Useful when the method name is common (e.g. 'get*') and you want to narrow to specific classes.", required = false )
+            String declaringTypePattern,
+            @ToolParam( name = "maxResults", description = "Maximum number of results to return (default: 100)", required = false )
+            String maxResults )
+    {
+        Integer limit = parseOptionalInt( maxResults );
+        return codeDiscoveryService.searchMethods( pattern, declaringTypePattern, limit );
+    }
+
+    @Tool( name = "getPackageSummary",
+           longExecution = true,
+           description = "Returns a table-of-contents for a Java package: every type's name, kind (class/interface/enum/record), "
+                       + "Javadoc first sentence, method count, field count, and implemented interfaces — all in one call. "
+                       + "Use this after searchTypes or getWorkspaceOverview identifies a relevant package, "
+                       + "to understand what the package contains without reading each file individually. "
+                       + "The Javadoc summaries help you decide which types are relevant to the user's request. "
+                       + "Follow up with getClassOutline or getMethodSource on specific types of interest.",
+           type = "object",
+           outputType = PackageSummaryResponse.class )
+    public PackageSummaryResponse getPackageSummary(
+            @ToolParam( name = "packageName", description = "Fully qualified package name (e.g. 'com.example.payment', 'org.acme.auth.service')", required = true )
+            String packageName,
+            @ToolParam( name = "projectName", description = "Optional project name to narrow the search. Useful in multi-project workspaces.", required = false )
+            String projectName )
+    {
+        return codeDiscoveryService.getPackageSummary( packageName, projectName );
+    }
+
+    @Tool( name = "getWorkspaceOverview",
+           longExecution = true,
+           description = "Returns a high-level architectural map of the workspace: all projects, their source packages, "
+                       + "and the type names in each package. Use this as the FIRST tool when orienting in an unfamiliar codebase "
+                       + "or when you need to understand the overall project structure before making changes. "
+                       + "Typical workflow: getWorkspaceOverview -> identify relevant packages -> getPackageSummary on those packages "
+                       + "-> getClassOutline/getMethodSource on specific types. "
+                       + "For large workspaces, use projectFilter to focus on specific projects.",
+           type = "object",
+           outputType = WorkspaceOverviewResponse.class )
+    public WorkspaceOverviewResponse getWorkspaceOverview(
+            @ToolParam( name = "projectFilter", description = "Optional substring to filter projects by name (e.g. 'payment' shows only payment-related projects, "
+                                                            + "'service' shows service projects). Leave empty to see all projects.", required = false )
+            String projectFilter,
+            @ToolParam( name = "maxPackagesPerProject", description = "Maximum number of packages to show per project (default: 50). "
+                                                                    + "Lower this for large projects to get a quick overview.", required = false )
+            String maxPackagesPerProject )
+    {
+        Integer maxPkgs = parseOptionalInt( maxPackagesPerProject );
+        return codeDiscoveryService.getWorkspaceOverview( projectFilter, maxPkgs );
+    }
+
 }
