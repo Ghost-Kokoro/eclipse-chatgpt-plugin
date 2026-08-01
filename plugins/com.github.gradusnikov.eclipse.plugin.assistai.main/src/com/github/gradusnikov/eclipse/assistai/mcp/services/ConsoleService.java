@@ -250,11 +250,9 @@ public class ConsoleService
      * @throws PartInitException 
      */
     private MessageConsole findOrCreateConsole(String name) throws PartInitException {
-        // Get the console manager
         ConsolePlugin plugin = ConsolePlugin.getDefault();
         IConsoleManager conMan = plugin.getConsoleManager();
         
-        // Try to find the console
         IConsole[] existing = conMan.getConsoles();
         for (IConsole console : existing) {
             if (name.equals(console.getName()) && console instanceof MessageConsole messageConsole) {
@@ -262,17 +260,24 @@ public class ConsoleService
             }
         }
         
-        // No console found, create a new one
         MessageConsole newConsole = new MessageConsole(name, null);
         conMan.addConsoles(new IConsole[] { newConsole });
         
-        // Show the console view
-        var page = Optional.ofNullable( PlatformUI.getWorkbench() )
-                 .map( IWorkbench::getActiveWorkbenchWindow )
-                 .map( IWorkbenchWindow::getActivePage )
-                 .orElseThrow( () -> new PartInitException("No active page available") );
-            IConsoleView view = (IConsoleView) page.showView(IConsoleConstants.ID_CONSOLE_VIEW);
-            view.display(newConsole);
+        try
+        {
+            var page = Optional.ofNullable( PlatformUI.getWorkbench() )
+                     .map( IWorkbench::getActiveWorkbenchWindow )
+                     .map( IWorkbenchWindow::getActivePage );
+            if ( page.isPresent() )
+            {
+                IConsoleView view = (IConsoleView) page.get().showView(IConsoleConstants.ID_CONSOLE_VIEW);
+                view.display(newConsole);
+            }
+        }
+        catch ( PartInitException e )
+        {
+            // No UI available (headless/Tycho environment) — console still works for output
+        }
         
         return newConsole;
     }

@@ -166,7 +166,7 @@ public class MarkdownParserPDETest {
 				""";
         
         MarkdownParser parser = new MarkdownParser(prompt);
-        System.out.println(parser.parseToHtml());
+        parser.parseToHtml();
         
     }
     
@@ -178,7 +178,7 @@ public class MarkdownParserPDETest {
                 """;
         
         MarkdownParser parser = new MarkdownParser(prompt);
-        System.out.println(parser.parseToHtml());
+        parser.parseToHtml();
         
     }
     
@@ -197,8 +197,7 @@ public class MarkdownParserPDETest {
 ```
 """;
         MarkdownParser parser = new MarkdownParser( content );
-        var out = parser.parseToHtml();
-        System.out.println( out );
+        parser.parseToHtml();
     }
 
     
