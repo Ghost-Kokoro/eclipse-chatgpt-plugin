@@ -29,6 +29,7 @@ import org.eclipse.core.runtime.jobs.IJobManager;
 import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.e4.core.di.annotations.Creatable;
 import org.eclipse.e4.ui.di.UISynchronize;
+import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.preference.IPreferenceStore;
 import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.wizard.Wizard;
@@ -42,6 +43,7 @@ import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.graphics.ImageLoader;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.FileDialog;
+import org.eclipse.swt.widgets.Shell;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.IWorkbenchWindow;
@@ -51,6 +53,9 @@ import org.eclipse.ui.dialogs.WizardNewFileCreationPage;
 import com.github.gradusnikov.eclipse.assistai.Activator;
 import com.github.gradusnikov.eclipse.assistai.chat.Attachment;
 import com.github.gradusnikov.eclipse.assistai.chat.Attachment.FileContentAttachment;
+import com.github.gradusnikov.eclipse.assistai.chat.ChatHistoryRepository;
+import com.github.gradusnikov.eclipse.assistai.chat.ChatHistoryRepository.ChatHistorySession;
+import com.github.gradusnikov.eclipse.assistai.chat.ChatHistoryRepository.PersistedMessage;
 import com.github.gradusnikov.eclipse.assistai.chat.ChatMessage;
 import com.github.gradusnikov.eclipse.assistai.chat.Conversation;
 import com.github.gradusnikov.eclipse.assistai.jobs.AssistAIJobConstants;
@@ -69,6 +74,7 @@ import com.github.gradusnikov.eclipse.assistai.tools.ResourceUtilities;
 import com.github.gradusnikov.eclipse.assistai.view.ChatView.NotificationType;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 import jakarta.inject.Singleton;
@@ -97,28 +103,30 @@ public class ChatViewPresenter implements IResourceCacheListener
 
     @Inject
     private AppendMessageToViewSubscriber appendMessageToViewSubscriber;
-    
+
     @Inject
     private ApplyPatchWizardHelper        applyPatchWizzardHelper;
-    
+
     @Inject
-    private CodeEditingService codeEditingService;
-    
+    private CodeEditingService            codeEditingService;
+
     @Inject
-    private ModelApiDescriptorRepository modelReposotiry;
-    
+    private ModelApiDescriptorRepository  modelReposotiry;
+
     @Inject
-    private PromptRepository promptRepository;
-    
+    private PromptRepository              promptRepository;
+
     @Inject
-    private UISynchronize uiSync;
-    
+    private UISynchronize                 uiSync;
+
     @Inject
-    private ResourceCache resourceCache;
-    
-    
-    private IPreferenceStore preferences;
-    
+    private ResourceCache                 resourceCache;
+
+    @Inject
+    private ChatHistoryRepository         historyRepository;
+
+    private IPreferenceStore              preferences;
+
     private static final String           LAST_SELECTED_DIR_KEY = "lastSelectedDirectory";
 
     private final List<Attachment>        attachments           = new ArrayList<>();
@@ -127,40 +135,48 @@ public class ChatViewPresenter implements IResourceCacheListener
     public void init()
     {
         preferences = Activator.getDefault().getPreferenceStore();
-    	appendMessageToViewSubscriber.setPresenter( this );
-        resourceCache.addCacheListener(this);
-        
+        appendMessageToViewSubscriber.setPresenter( this );
+        resourceCache.addCacheListener( this );
         initializeAvailableModels();
     }
-    
-    @Override
-    public void cacheChanged(ResourceCacheEvent event)
+
+    /** Flush the current session to disk when the workbench shuts down. */
+    @PreDestroy
+    public void destroy()
     {
-        if (event.getType() == ResourceCacheEvent.Type.ADDED && event.getResource() != null)
+        historyRepository.saveCurrentSession( conversation.messages() );
+    }
+
+    @Override
+    public void cacheChanged( ResourceCacheEvent event )
+    {
+        if ( event.getType() == ResourceCacheEvent.Type.ADDED && event.getResource() != null )
         {
             String resourceName = event.getResource().descriptor().displayName();
-            applyToView(view -> {
+            applyToView( view -> {
                 view.showNotification(
                     "Resource added: " + resourceName,
-                    Duration.ofSeconds(3),
-                    NotificationType.INFO
-                );
-            });
+                    Duration.ofSeconds( 3 ),
+                    NotificationType.INFO );
+            } );
         }
     }
 
-	private void initializeAvailableModels() {
-		// Initialize model from preferences if available
+    private void initializeAvailableModels()
+    {
         var selectedModel = modelReposotiry.getChatModelInUse();
-        var models = modelReposotiry.listModelApiDescriptors();
+        var models        = modelReposotiry.listModelApiDescriptors();
         applyToView( view -> {
-        	view.setAvailableModels( models, Optional.ofNullable( selectedModel.uid() ).orElse("" ) );
-        });
-	}
+            view.setAvailableModels( models, Optional.ofNullable( selectedModel.uid() ).orElse( "" ) );
+        } );
+    }
 
     public void onClear()
     {
         onStop();
+        // Persist the current conversation before wiping it
+        historyRepository.saveCurrentSession( conversation.messages() );
+        historyRepository.startNewSession();
         conversation.clear();
         attachments.clear();
         resourceCache.clear();
@@ -190,24 +206,23 @@ public class ChatViewPresenter implements IResourceCacheListener
 
     private ChatMessage createUserMessage( String userMessage )
     {
-        Pattern commandPattern = Pattern.compile("^/(\\S+)");
+        Pattern commandPattern = Pattern.compile( "^/(\\S+)" );
         Matcher commandMatcher = commandPattern.matcher( userMessage );
         Supplier<String> supplier = () -> userMessage;
         if ( commandMatcher.find() )
         {
             supplier = () -> promptRepository.findPromptByCommandName( commandMatcher.group( 1 ) )
                                              .map( chatMessageFactory::createUserChatMessage )
-                                             .map( ChatMessage::getContent)
+                                             .map( ChatMessage::getContent )
                                              .orElse( userMessage );
         }
-        
         ChatMessage message = chatMessageFactory.createUserChatMessage( supplier );
         message.setAttachments( attachments );
         return message;
     }
 
-
-	public ChatMessage beginFunctionCallMessage() {
+    public ChatMessage beginFunctionCallMessage()
+    {
         ChatMessage message = chatMessageFactory.createAssistantChatMessage( "" );
         // DO NOT ADD IT TO CONVERSATION
         applyToView( messageView -> {
@@ -215,9 +230,9 @@ public class ChatViewPresenter implements IResourceCacheListener
             messageView.setInputEnabled( false );
         } );
         return message;
-	}
+    }
 
-	public ChatMessage beginMessageFromAssistant()
+    public ChatMessage beginMessageFromAssistant()
     {
         ChatMessage message = chatMessageFactory.createAssistantChatMessage( "" );
         conversation.add( message );
@@ -237,36 +252,35 @@ public class ChatViewPresenter implements IResourceCacheListener
 
     public void endMessageFromAssistant( ChatMessage message )
     {
-    	applyToView( messageView -> {
+        applyToView( messageView -> {
             messageView.setInputEnabled( true );
             messageView.setFocus();
             if ( message.getContent().isBlank() )
             {
-            	conversation.removeMessageById(message.getId());
-            	messageView.removeMessage(message.getId());
+                conversation.removeMessageById( message.getId() );
+                messageView.removeMessage( message.getId() );
             }
+            // Auto-save after every completed assistant turn
+            historyRepository.saveCurrentSession( conversation.messages() );
         } );
     }
-    
+
     public void hideMessage( String messageId )
     {
         applyToView( messageView -> {
-            messageView.hideMessage(messageId);
+            messageView.hideMessage( messageId );
         } );
     }
-    
-    
-    
+
     /**
-     * Cancels all running ChatGPT jobs
+     * Cancels all running ChatGPT jobs.
      */
     public void onStop()
     {
         var jobs = jobManager.find( null );
         Arrays.stream( jobs )
-        	  .filter( job -> job.getName().startsWith( AssistAIJobConstants.JOB_PREFIX ) )
-        	  .forEach( Job::cancel );
-
+              .filter( job -> job.getName().startsWith( AssistAIJobConstants.JOB_PREFIX ) )
+              .forEach( Job::cancel );
         applyToView( messageView -> {
             messageView.setInputEnabled( true );
         } );
@@ -275,34 +289,28 @@ public class ChatViewPresenter implements IResourceCacheListener
     /**
      * Copies the given code block to the system clipboard.
      *
-     * @param codeBlock
-     *            The code block to be copied to the clipboard.
+     * @param codeBlock the code block to copy
      */
     public void onCopyCode( String codeBlock )
     {
-        var clipboard = new Clipboard( PlatformUI.getWorkbench().getDisplay() );
+        var clipboard    = new Clipboard( PlatformUI.getWorkbench().getDisplay() );
         var textTransfer = TextTransfer.getInstance();
-        clipboard.setContents( new Object[] { codeBlock }, new Transfer[] { textTransfer } );
+        clipboard.setContents( new Object[]{ codeBlock }, new Transfer[]{ textTransfer } );
         clipboard.dispose();
     }
 
     public void onApplyPatch( String codeBlock )
     {
         applyPatchWizzardHelper.showApplyPatchWizardDialog( codeBlock, null );
-
     }
 
     public void onSendPredefinedPrompt( Prompts type, ChatMessage message )
     {
         conversation.add( message );
-
-        // update view
         applyToView( messageView -> {
             messageView.appendMessage( message.getId(), message.getRole() );
             messageView.setMessageHtml( message.getId(), "/" + type.getCommandName() );
         } );
-
-        // schedule message
         sendConversationJobProvider.get().schedule();
     }
 
@@ -314,26 +322,20 @@ public class ChatViewPresenter implements IResourceCacheListener
             logger.error( "No active display" );
             return;
         }
-        
+
         uiSync.asyncExec( () -> {
             FileDialog fileDialog = new FileDialog( display.getActiveShell(), SWT.OPEN );
             fileDialog.setText( "Select an Image" );
-
-            // Retrieve the last selected directory from the preferences
             String lastSelectedDirectory = preferences.getString( LAST_SELECTED_DIR_KEY );
             fileDialog.setFilterPath( lastSelectedDirectory );
-
-            fileDialog.setFilterExtensions( new String[] { "*.png", "*.jpeg", "*.jpg" } );
-            fileDialog.setFilterNames( new String[] { "PNG files (*.png)", "JPEG files (*.jpeg, *.jpg)" } );
+            fileDialog.setFilterExtensions( new String[]{ "*.png", "*.jpeg", "*.jpg" } );
+            fileDialog.setFilterNames( new String[]{ "PNG files (*.png)", "JPEG files (*.jpeg, *.jpg)" } );
 
             String selectedFilePath = fileDialog.open();
-
             if ( selectedFilePath != null )
             {
-                // Save the last selected directory back to the preferences
                 String newLastSelectedDirectory = new File( selectedFilePath ).getParent();
                 preferences.putValue( LAST_SELECTED_DIR_KEY, newLastSelectedDirectory );
-
                 ImageData[] imageDataArray = new ImageLoader().load( selectedFilePath );
                 if ( imageDataArray.length > 0 )
                 {
@@ -350,7 +352,7 @@ public class ChatViewPresenter implements IResourceCacheListener
     {
         uiSync.asyncExec( () -> {
             partAccessor.findMessageView().ifPresent( consumer );
-        });
+        } );
     }
 
     public void onImageSelected( Image image )
@@ -374,255 +376,331 @@ public class ChatViewPresenter implements IResourceCacheListener
         } );
     }
 
-
-    public void onInsertCode(String codeBlock) {
-       uiSync.asyncExec(() -> {
-            try 
-            {
-                Optional.ofNullable(PlatformUI.getWorkbench())
-                    .map(workbench -> workbench.getActiveWorkbenchWindow())
-                    .map(window -> window.getActivePage())
-                    .map(page -> page.getActiveEditor())
-                    .flatMap(editor -> Optional.ofNullable(editor.getAdapter(org.eclipse.ui.texteditor.ITextEditor.class)))
-                    .ifPresent(textEditor -> {
-                        var selectionProvider = textEditor.getSelectionProvider();
-                        var document = textEditor.getDocumentProvider()
-                                                 .getDocument(textEditor.getEditorInput());
-                        
-                        if (selectionProvider != null && document != null) 
-                        {
-                            var selection = (org.eclipse.jface.text.ITextSelection) selectionProvider.getSelection();
-                            try 
-                            {
-                                // Replace selection or insert at cursor position
-                                if (selection.getLength() > 0) 
-                                {
-                                    // Replace selected text
-                                    document.replace(selection.getOffset(), selection.getLength(), codeBlock);
-                                }
-                                else 
-                                {
-                                    // Insert at cursor position
-                                    document.replace(selection.getOffset(), 0, codeBlock);
-                                }
-                            } 
-                            catch (org.eclipse.jface.text.BadLocationException e) 
-                            {
-                                logger.error("Error inserting code at location", e);
-                            }
-                        } 
-                        else 
-                        {
-                            logger.error("Selection provider or document is null");
-                        }
-                    });
-            } 
-            catch (Exception e) 
-            {
-                logger.error("Error inserting code", e);
-            }
-        });
-    }
-
-    public void onDiffCode(String codeBlock) {
-        uiSync.asyncExec(() -> {
-            try {
-                Optional.ofNullable(PlatformUI.getWorkbench())
-                    .map(workbench -> workbench.getActiveWorkbenchWindow())
-                    .map(window -> window.getActivePage())
-                    .map(page -> page.getActiveEditor())
-                    .flatMap(editor -> Optional.ofNullable(editor.getAdapter(org.eclipse.ui.texteditor.ITextEditor.class)))
-                    .ifPresent(textEditor -> {
-                        // Get the file information
-                        if (textEditor.getEditorInput() instanceof org.eclipse.ui.part.FileEditorInput) {
-                            org.eclipse.ui.part.FileEditorInput fileInput = 
-                                (org.eclipse.ui.part.FileEditorInput) textEditor.getEditorInput();
-                            
-                            // Get project name and file path
-                            String projectName = fileInput.getFile().getProject().getName();
-                            String filePath = fileInput.getFile().getProjectRelativePath().toString();
-                            
-                            // Generate diff using the CodeEditingService
-                            String diff = codeEditingService.generateCodeDiff(
-                                projectName, 
-                                filePath, 
-                                codeBlock, 
-                                3 // Default context lines
-                            );
-                            
-                            if (diff != null && !diff.isBlank() ) 
-                            {
-                                // Show the apply patch wizard with the generated diff and preselected project
-                                applyPatchWizzardHelper.showApplyPatchWizardDialog(diff, projectName);
-                            } else {
-                                logger.info("No differences found between current code and provided code block");
-                            }
-                        } else {
-                            logger.error("Cannot get file information from editor");
-                        }
-                    });
-            } catch (Exception e) {
-                logger.error("Error generating diff for code", e);
-            }
-        });
-    }
-
-
-
-    public void onNewFile(String codeBlock, String lang) 
+    public void onInsertCode( String codeBlock )
     {
-        uiSync.asyncExec(() -> {
-            try 
+        uiSync.asyncExec( () -> {
+            try
+            {
+                Optional.ofNullable( PlatformUI.getWorkbench() )
+                        .map( workbench -> workbench.getActiveWorkbenchWindow() )
+                        .map( window -> window.getActivePage() )
+                        .map( page -> page.getActiveEditor() )
+                        .flatMap( editor -> Optional.ofNullable( editor.getAdapter( org.eclipse.ui.texteditor.ITextEditor.class ) ) )
+                        .ifPresent( textEditor -> {
+                            var selectionProvider = textEditor.getSelectionProvider();
+                            var document = textEditor.getDocumentProvider()
+                                                     .getDocument( textEditor.getEditorInput() );
+                            if ( selectionProvider != null && document != null )
+                            {
+                                var selection = (org.eclipse.jface.text.ITextSelection) selectionProvider.getSelection();
+                                try
+                                {
+                                    if ( selection.getLength() > 0 )
+                                    {
+                                        document.replace( selection.getOffset(), selection.getLength(), codeBlock );
+                                    }
+                                    else
+                                    {
+                                        document.replace( selection.getOffset(), 0, codeBlock );
+                                    }
+                                }
+                                catch ( org.eclipse.jface.text.BadLocationException e )
+                                {
+                                    logger.error( "Error inserting code at location", e );
+                                }
+                            }
+                            else
+                            {
+                                logger.error( "Selection provider or document is null" );
+                            }
+                        } );
+            }
+            catch ( Exception e )
+            {
+                logger.error( "Error inserting code", e );
+            }
+        } );
+    }
+
+    public void onDiffCode( String codeBlock )
+    {
+        uiSync.asyncExec( () -> {
+            try
+            {
+                Optional.ofNullable( PlatformUI.getWorkbench() )
+                        .map( workbench -> workbench.getActiveWorkbenchWindow() )
+                        .map( window -> window.getActivePage() )
+                        .map( page -> page.getActiveEditor() )
+                        .flatMap( editor -> Optional.ofNullable( editor.getAdapter( org.eclipse.ui.texteditor.ITextEditor.class ) ) )
+                        .ifPresent( textEditor -> {
+                            if ( textEditor.getEditorInput() instanceof org.eclipse.ui.part.FileEditorInput )
+                            {
+                                org.eclipse.ui.part.FileEditorInput fileInput =
+                                        (org.eclipse.ui.part.FileEditorInput) textEditor.getEditorInput();
+                                String projectName = fileInput.getFile().getProject().getName();
+                                String filePath    = fileInput.getFile().getProjectRelativePath().toString();
+                                String diff        = codeEditingService.generateCodeDiff( projectName, filePath, codeBlock, 3 );
+                                if ( diff != null && !diff.isBlank() )
+                                {
+                                    applyPatchWizzardHelper.showApplyPatchWizardDialog( diff, projectName );
+                                }
+                                else
+                                {
+                                    logger.info( "No differences found between current code and provided code block" );
+                                }
+                            }
+                            else
+                            {
+                                logger.error( "Cannot get file information from editor" );
+                            }
+                        } );
+            }
+            catch ( Exception e )
+            {
+                logger.error( "Error generating diff for code", e );
+            }
+        } );
+    }
+
+    public void onNewFile( String codeBlock, String lang )
+    {
+        uiSync.asyncExec( () -> {
+            try
             {
                 IProject project = Optional.ofNullable( PlatformUI.getWorkbench() )
-                        .map(IWorkbench::getActiveWorkbenchWindow)
+                        .map( IWorkbench::getActiveWorkbenchWindow )
                         .map( IWorkbenchWindow::getActivePage )
                         .map( IWorkbenchPage::getActiveEditor )
-                        .map(editor -> editor.getEditorInput())
-                        .filter(input -> input instanceof org.eclipse.ui.part.FileEditorInput)
-                        .map(input -> ((org.eclipse.ui.part.FileEditorInput) input).getFile().getProject())
-                        .orElse(null);
+                        .map( editor -> editor.getEditorInput() )
+                        .filter( input -> input instanceof org.eclipse.ui.part.FileEditorInput )
+                        .map( input -> ((org.eclipse.ui.part.FileEditorInput) input).getFile().getProject() )
+                        .orElse( null );
 
-                if (project != null) 
+                if ( project != null )
                 {
-                    // Create suggested file name and path based on language
-                	String suggestedFileName = ResourceUtilities.getSuggestedFileName(lang, codeBlock);
-                    IPath suggestedPath      = ResourceUtilities.getSuggestedPath(project, lang, codeBlock);
-                    WizardNewFileCreationPage newFilePage = new WizardNewFileCreationPage("NewFilePage", new StructuredSelection(project));
-                    newFilePage.setTitle("New File");
-                    newFilePage.setDescription(String.format("Create a new %s file in the project", ResourceUtilities.getFileExtensionForLang( lang )) );
-                    
-                    // Set suggested file name and path
-                    if (suggestedPath != null) 
+                    String suggestedFileName = ResourceUtilities.getSuggestedFileName( lang, codeBlock );
+                    IPath  suggestedPath     = ResourceUtilities.getSuggestedPath( project, lang, codeBlock );
+                    WizardNewFileCreationPage newFilePage = new WizardNewFileCreationPage( "NewFilePage", new StructuredSelection( project ) );
+                    newFilePage.setTitle( "New File" );
+                    newFilePage.setDescription( String.format( "Create a new %s file in the project", ResourceUtilities.getFileExtensionForLang( lang ) ) );
+                    if ( suggestedPath != null )
                     {
-                        newFilePage.setContainerFullPath(suggestedPath);
+                        newFilePage.setContainerFullPath( suggestedPath );
                     }
-                    if (suggestedFileName != null && !suggestedFileName.isBlank()) 
+                    if ( suggestedFileName != null && !suggestedFileName.isBlank() )
                     {
-                        newFilePage.setFileName(suggestedFileName);
+                        newFilePage.setFileName( suggestedFileName );
                     }
-                    
-                    
-                    Wizard wizard = new Wizard() {
+
+                    Wizard wizard = new Wizard()
+                    {
                         @Override
-                        public void addPages() 
+                        public void addPages()
                         {
-                            addPage(newFilePage);
+                            addPage( newFilePage );
                         }
 
                         @Override
-                        public boolean performFinish() {
+                        public boolean performFinish()
+                        {
                             IFile newFile = newFilePage.createNewFile();
-                            if (newFile != null) 
+                            if ( newFile != null )
                             {
-                                try (InputStream stream = new ByteArrayInputStream(codeBlock.getBytes(StandardCharsets.UTF_8))) 
+                                try ( InputStream stream = new ByteArrayInputStream( codeBlock.getBytes( StandardCharsets.UTF_8 ) ) )
                                 {
-                                    newFile.setContents(stream, true, true, null);
-                                    logger.info("New file created at: " + newFile.getFullPath().toString());
+                                    newFile.setContents( stream, true, true, null );
+                                    logger.info( "New file created at: " + newFile.getFullPath().toString() );
                                     return true;
-                                } 
-                                catch (CoreException | IOException e) 
+                                }
+                                catch ( CoreException | IOException e )
                                 {
-                                    logger.error("Error creating new file", e);
+                                    logger.error( "Error creating new file", e );
                                 }
                             }
                             return false;
                         }
                     };
 
-                    WizardDialog dialog = new WizardDialog(PlatformUI.getWorkbench().getActiveWorkbenchWindow().getShell(), wizard);
+                    WizardDialog dialog = new WizardDialog( PlatformUI.getWorkbench().getActiveWorkbenchWindow().getShell(), wizard );
                     dialog.open();
-                } 
-                else 
-                {
-                    logger.error("No active project found");
                 }
-            } 
-            catch (Exception e) 
-            {
-                logger.error("Error opening new file wizard", e);
+                else
+                {
+                    logger.error( "No active project found" );
+                }
             }
-        });
+            catch ( Exception e )
+            {
+                logger.error( "Error opening new file wizard", e );
+            }
+        } );
     }
-    
+
     /**
      * Handles model selection from the dropdown menu.
-     * 
-     * This method is called when a user selects a different AI model from the
-     * dropdown menu in the UI. It updates the preferences to store the selected
-     * model and would typically update any service configurations to use the new model.
-     * 
-     * @param modelId The ID of the selected model
+     *
+     * @param modelId the ID of the selected model
      */
-    public void onChatModelSelected(String modelId) 
+    public void onChatModelSelected( String modelId )
     {
-        logger.info("Model selected: " + modelId);
-        
+        logger.info( "Model selected: " + modelId );
         modelReposotiry.setChatModelInUse( modelId );
         initializeAvailableModels();
     }
-    
+
     /**
      * Regenerates the last AI response using the currently selected model.
-     * 
-     * This method is called when the user clicks the replay button. It removes
-     * the last assistant message from the conversation (if it exists) and
-     * sends the conversation again to generate a new response.
      */
-    public void onReplayLastMessage() {
-        logger.info("Replaying last message with current model");
-        
-        // Check if there's a conversation with at least one message
-        if (conversation.messages().isEmpty()) 
+    public void onReplayLastMessage()
+    {
+        logger.info( "Replaying last message with current model" );
+        if ( conversation.messages().isEmpty() )
         {
             return;
         }
-        // If the last message is from the assistant, remove it
-        // (We want to regenerate the assistant's response)
         List<ChatMessage> messages = conversation.messages();
-        if (!messages.isEmpty() && "assistant".equals(messages.get(messages.size() - 1).getRole())) {
-            ChatMessage lastMessage = messages.get(messages.size() - 1);
+        if ( !messages.isEmpty() && "assistant".equals( messages.get( messages.size() - 1 ).getRole() ) )
+        {
+            ChatMessage lastMessage = messages.get( messages.size() - 1 );
             conversation.removeLastMessage();
-            
-            // Remove the message from the UI
-            applyToView(view -> {
-                view.removeMessage(lastMessage.getId());
-            });
+            applyToView( view -> {
+                view.removeMessage( lastMessage.getId() );
+            } );
         }
-        // Send the conversation for processing to generate a new response
-    	sendConversationJobProvider.get().schedule();
+        sendConversationJobProvider.get().schedule();
     }
 
-	public void onViewVisible() 
-	{
-		initializeAvailableModels();
-		updateAutocomplete();
-	}
-	
-	public void onRemoveMessage(String messageId )
-	{
-	    this.conversation.removeMessageById( messageId );
-	    applyToView( view -> {
-	        view.removeMessage( messageId );
-	    } );
-	}
-	
-	public void onRemoveAttachment( int index )
-	{
-	    if ( index >= 0 && index < attachments.size() )
-	    {
-	        attachments.remove( index );
-	        applyToView( view -> {
-	            view.setAttachments( attachments );
-	        } );
-	    }
-	}
-	
+    public void onViewVisible()
+    {
+        initializeAvailableModels();
+        updateAutocomplete();
+    }
+
+    public void onRemoveMessage( String messageId )
+    {
+        this.conversation.removeMessageById( messageId );
+        applyToView( view -> {
+            view.removeMessage( messageId );
+        } );
+    }
+
+    public void onRemoveAttachment( int index )
+    {
+        if ( index >= 0 && index < attachments.size() )
+        {
+            attachments.remove( index );
+            applyToView( view -> {
+                view.setAttachments( attachments );
+            } );
+        }
+    }
+
     public void updateAutocomplete()
     {
         Map<String, String> mappings = promptRepository.getAllPrompts()
                                                        .stream()
                                                        .collect( Collectors.toMap( Prompts::getCommandName, Prompts::getDescription ) );
-        applyToView( view -> view.setAutocompleteModel( mappings  ) );
+        applyToView( view -> view.setAutocompleteModel( mappings ) );
+    }
+
+    // -------------------------------------------------------------------------
+    // Chat history
+    // -------------------------------------------------------------------------
+
+    /**
+     * Opens the Chat History dialog.  If the user selects a session and presses
+     * Load, the current conversation is replaced by the stored one.
+     */
+    public void onShowHistory()
+    {
+        uiSync.asyncExec( () -> {
+            Shell shell = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getShell();
+
+            List<ChatHistorySession> sessions = new ArrayList<>( historyRepository.listSessions() );
+            if ( sessions.isEmpty() )
+            {
+                MessageDialog.openInformation(
+                        shell,
+                        "Chat History",
+                        "No saved sessions found yet.\n\nSessions are saved automatically after each assistant response." );
+                return;
+            }
+
+            ChatHistoryDialog dialog = new ChatHistoryDialog( shell, sessions );
+            int rc = dialog.open();
+
+            // Apply deletions the user made inside the dialog
+            List<String> remainingIds = dialog.getRemainingSessionIds()
+                                              .stream()
+                                              .map( ChatHistorySession::id )
+                                              .collect( Collectors.toList() );
+            historyRepository.listSessions().stream()
+                             .filter( s -> !remainingIds.contains( s.id() ) )
+                             .forEach( s -> historyRepository.deleteSession( s.id() ) );
+
+            // Load the selected session when the user pressed Load
+            if ( rc == org.eclipse.jface.dialogs.Dialog.OK )
+            {
+                ChatHistorySession loaded = dialog.getLoadedSession();
+                if ( loaded != null )
+                {
+                    loadHistorySession( loaded );
+                }
+            }
+        } );
+    }
+
+    /**
+     * Replaces the current conversation with the messages from the given
+     * persisted session and re-renders the chat view.
+     *
+     * @param session the session to restore
+     */
+    private void loadHistorySession( ChatHistorySession session )
+    {
+        onStop();
+        conversation.clear();
+        attachments.clear();
+        resourceCache.clear();
+
+        List<ChatMessage> restored = new ArrayList<>();
+        if ( session.messages() != null )
+        {
+            for ( PersistedMessage pm : session.messages() )
+            {
+                ChatMessage msg = new ChatMessage( pm.id(), pm.name(), pm.role() );
+                msg.setContent( pm.content() != null ? pm.content() : "" );
+
+                // Restore file attachments (images cannot be persisted)
+                if ( pm.attachments() != null )
+                {
+                    List<Attachment> atts = new ArrayList<>();
+                    for ( var pa : pm.attachments() )
+                    {
+                        if ( "file".equals( pa.type() ) )
+                        {
+                            atts.add( new Attachment.FileContentAttachment(
+                                    pa.filePath(),
+                                    pa.lineNumberStart(),
+                                    pa.lineNumberEnd(),
+                                    pa.selectedContent() ) );
+                        }
+                    }
+                    msg.setAttachments( atts );
+                }
+                restored.add( msg );
+            }
+        }
+        restored.forEach( conversation::add );
+
+        // Mark this session as current so subsequent auto-saves update the same file
+        historyRepository.setCurrentSession( session.id() );
+
+        // Re-render the chat view with the restored messages
+        applyToView( view -> {
+            view.clearChatView();
+            view.clearAttachments();
+            view.renderConversation( restored );
+        } );
     }
 }
