@@ -25,6 +25,8 @@ import org.eclipse.jface.fieldassist.TextContentAdapter;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.browser.Browser;
 import org.eclipse.swt.browser.BrowserFunction;
+import org.eclipse.swt.browser.ProgressAdapter;
+import org.eclipse.swt.browser.ProgressEvent;
 import org.eclipse.swt.custom.SashForm;
 import org.eclipse.swt.custom.ScrolledComposite;
 import org.eclipse.swt.dnd.Clipboard;
@@ -63,7 +65,9 @@ import org.eclipse.ui.PlatformUI;
 
 import com.github.gradusnikov.eclipse.assistai.chat.Attachment;
 import com.github.gradusnikov.eclipse.assistai.chat.Attachment.UiVisitor;
+import com.github.gradusnikov.eclipse.assistai.chat.ChatMessage;
 import com.github.gradusnikov.eclipse.assistai.models.ModelApiDescriptor;
+import com.github.gradusnikov.eclipse.assistai.prompt.ChatMessageUtilities;
 import com.github.gradusnikov.eclipse.assistai.prompt.MarkdownParser;
 import com.github.gradusnikov.eclipse.assistai.tools.AssistaiSharedFiles;
 import com.github.gradusnikov.eclipse.assistai.tools.AssistaiSharedFonts;
@@ -211,6 +215,7 @@ public class ChatView
         
         // Add toolbar items instead of buttons
         modelDropdownItem = createModelSelectorComposite(actionToolBar);
+        createHistoryToolItem(actionToolBar);
         createAttachmentToolItem(actionToolBar);
         createReplayToolItem(actionToolBar);
         createClearChatToolItem(actionToolBar);
@@ -449,6 +454,35 @@ public class ChatView
         return item;
     }
     
+    /**
+     * Creates a toolbar item that opens the chat history dialog.
+     *
+     * @param toolbar The parent toolbar
+     * @return The created toolbar item
+     */
+    private ToolItem createHistoryToolItem(ToolBar toolbar) {
+        ToolItem item = new ToolItem(toolbar, SWT.PUSH);
+
+        try {
+            // Use the back arrow icon to suggest "previous conversations"
+            Image historyIcon = PlatformUI.getWorkbench().getSharedImages().getImage(ISharedImages.IMG_TOOL_BACK);
+            item.setImage(historyIcon);
+        } catch (Exception e) {
+            logger.error(e.getMessage(), e);
+        }
+
+        item.setToolTipText("Chat history");
+
+        item.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent e) {
+                presenter.onShowHistory();
+            }
+        });
+
+        return item;
+    }
+
     /**
      * Creates a toolbar item that allows the user to replay the last conversation
      * using a different model.
@@ -1429,4 +1463,46 @@ public class ChatView
 	               .replace("\r", "\\r")
 	               .replace("\t", "\\t");
 	}
+
+    /**
+     * Clears the browser and re-renders a list of messages.
+     *
+     * <p>The method resets the browser to a blank page first, then waits for
+     * the page to finish loading before appending each message.  This avoids
+     * race conditions where DOM operations run before the HTML scaffold exists.</p>
+     *
+     * @param messages the ordered list of messages to render
+     */
+    public void renderConversation( List<ChatMessage> messages )
+    {
+        uiSync.asyncExec( () -> {
+            // Re-initialise the browser with the base HTML/CSS/JS scaffold
+            initializeChatView( browser );
+
+            // Once the page finishes loading, inject all the messages
+            browser.addProgressListener( new ProgressAdapter()
+            {
+                @Override
+                public void completed( ProgressEvent event )
+                {
+                    // Remove this one-shot listener immediately
+                    browser.removeProgressListener( this );
+
+                    for ( ChatMessage msg : messages )
+                    {
+                        if ( msg.isEmpty() )
+                        {
+                            continue;
+                        }
+                        // appendMessage and setMessageHtml already call uiSync.asyncExec
+                        // internally, so the calls queue up in order on the UI thread.
+                        appendMessage( msg.getId(), msg.getRole() );
+                        String content = ChatMessageUtilities.toMarkdownContent( msg );
+                        setMessageHtml( msg.getId(), content );
+                    }
+                }
+            } );
+        } );
+    }
+
 }
