@@ -1,11 +1,18 @@
 package com.github.gradusnikov.eclipse.assistai.preferences.models;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
 import org.eclipse.e4.core.contexts.IEclipseContext;
 import org.eclipse.e4.ui.di.UISynchronize;
+import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.preference.PreferencePage;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.SashForm;
@@ -17,6 +24,7 @@ import org.eclipse.swt.layout.FormLayout;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Group;
@@ -29,6 +37,8 @@ import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPreferencePage;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gradusnikov.eclipse.assistai.Activator;
 import com.github.gradusnikov.eclipse.assistai.models.ModelApiDescriptor;
 
@@ -49,7 +59,9 @@ public class ModelListPreferencePage extends PreferencePage implements IWorkbenc
 
     private Text       requestTimeout;
 
-    private Text       modelName;
+    private Combo      modelName;
+
+    private Button     queryModelsButton;
 
     private Button     withVision;
 
@@ -161,6 +173,7 @@ public class ModelListPreferencePage extends PreferencePage implements IWorkbenc
         } );    
         addButton.addListener( SWT.Selection, e -> presenter.addModel() );
         removeButton.addListener( SWT.Selection, e -> presenter.removeModel( modelTable.getSelectionIndex() ) );
+        queryModelsButton.addListener( SWT.Selection, e -> queryAvailableModels() );
         
     }
 
@@ -176,7 +189,10 @@ public class ModelListPreferencePage extends PreferencePage implements IWorkbenc
         apiKey = addTextField( form, "API Key:");
         connectionTimeout = addTextField( form, "Connection Timeout (s):");
         requestTimeout = addTextField( form, "Request Timeout (s):");
-        modelName = addTextField( form, "Model Name:");
+        modelName = addComboField( form, "Model Name:");
+        queryModelsButton = new Button( form, SWT.PUSH );
+        queryModelsButton.setText( "Query available models" );
+        addFormControl( queryModelsButton, form, "" );
         withVision = addCheckField( form, "With Vision:");
         withFunctionCalls = addCheckField( form, "With Function Calls:");
         withTemperature = addScaleField( form, "Temperature");
@@ -207,6 +223,127 @@ public class ModelListPreferencePage extends PreferencePage implements IWorkbenc
         Text text = new Text( form, SWT.BORDER );
         addFormControl( text, form, labelText);
         return text;
+    }
+
+    private Combo addComboField( Composite form, String labelText)
+    {
+        Combo combo = new Combo( form, SWT.BORDER | SWT.DROP_DOWN );
+        addFormControl( combo, form, labelText );
+        return combo;
+    }
+
+    private void queryAvailableModels()
+    {
+        String url = apiUrl.getText().trim();
+        String key = apiKey.getText().trim();
+        int connectTimeoutSeconds = parseTimeout( connectionTimeout.getText(), 10 );
+        int requestTimeoutSeconds = parseTimeout( requestTimeout.getText(), 30 );
+        if ( url.isEmpty() )
+        {
+            MessageDialog.openWarning( getShell(), "Query Models", "Please enter an API URL first." );
+            return;
+        }
+
+        queryModelsButton.setEnabled( false );
+        Thread.ofVirtual().start( () -> {
+            try
+            {
+                URI modelsUri = toModelsUri( url );
+                HttpClient client = HttpClient.newBuilder()
+                        .connectTimeout( Duration.ofSeconds( connectTimeoutSeconds ) )
+                        .build();
+                HttpRequest.Builder requestBuilder = HttpRequest.newBuilder( modelsUri )
+                        .timeout( Duration.ofSeconds( requestTimeoutSeconds ) )
+                        .header( "Accept", "application/json" )
+                        .GET();
+                if ( !key.isEmpty() )
+                {
+                    requestBuilder.header( "Authorization", "Bearer " + key );
+                }
+                HttpResponse<String> response = client.send( requestBuilder.build(),
+                        HttpResponse.BodyHandlers.ofString() );
+                if ( response.statusCode() < 200 || response.statusCode() >= 300 )
+                {
+                    throw new IllegalStateException( "HTTP " + response.statusCode() + ": "
+                            + abbreviate( response.body(), 500 ) );
+                }
+
+                JsonNode data = new ObjectMapper().readTree( response.body() ).path( "data" );
+                if ( !data.isArray() )
+                {
+                    throw new IllegalStateException( "The response does not contain a 'data' model array." );
+                }
+                List<String> models = new java.util.ArrayList<>();
+                for ( JsonNode node : data )
+                {
+                    String id = node.path( "id" ).asText();
+                    if ( !id.isBlank() )
+                    {
+                        models.add( id );
+                    }
+                }
+                models.sort( String::compareToIgnoreCase );
+                uiSync.asyncExec( () -> showQueriedModels( models ) );
+            }
+            catch ( Exception exception )
+            {
+                uiSync.asyncExec( () -> showQueryError( exception ) );
+            }
+        } );
+    }
+
+    private void showQueriedModels( List<String> models )
+    {
+        if ( queryModelsButton.isDisposed() )
+        {
+            return;
+        }
+        String currentModel = modelName.getText();
+        modelName.setItems( models.toArray( String[]::new ) );
+        modelName.setText( currentModel );
+        queryModelsButton.setEnabled( true );
+        if ( models.isEmpty() )
+        {
+            MessageDialog.openInformation( getShell(), "Query Models", "The API returned no models." );
+        }
+        else
+        {
+            modelName.setFocus();
+            modelName.setListVisible( true );
+        }
+    }
+
+    private void showQueryError( Exception exception )
+    {
+        if ( queryModelsButton.isDisposed() )
+        {
+            return;
+        }
+        queryModelsButton.setEnabled( true );
+        String message = exception.getMessage();
+        MessageDialog.openError( getShell(), "Unable to Query Models",
+                message == null || message.isBlank() ? exception.getClass().getSimpleName() : message );
+    }
+
+    private static URI toModelsUri( String apiUrl )
+    {
+        URI uri = URI.create( apiUrl );
+        String path = uri.getPath() == null ? "" : uri.getPath().replaceFirst( "/+$", "" );
+        path = path.replaceFirst( "/(?:chat/completions|responses|completions|models)$", "" );
+        if ( !path.endsWith( "/v1" ) )
+        {
+            path += "/v1";
+        }
+        return URI.create( uri.getScheme() + "://" + uri.getRawAuthority() + path + "/models" );
+    }
+
+    private static String abbreviate( String text, int maxLength )
+    {
+        if ( text == null || text.length() <= maxLength )
+        {
+            return text;
+        }
+        return text.substring( 0, maxLength ) + "...";
     }
 
     private Control addFormControl( Control control, Composite form, String labelText)
