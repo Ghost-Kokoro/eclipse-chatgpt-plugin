@@ -149,7 +149,10 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
             // Add required fields for DeepSeek API
             requestBody.put("model", model.modelName());
             requestBody.put("messages", messages);
-            model.scaledTemperature().ifPresent( temp -> requestBody.put("temperature", temp  ) );
+            // deepseek-reasoner (R1) does not support temperature/top_p sampling params
+            if (!model.modelName().contains("reasoner")) {
+                model.scaledTemperature().ifPresent(temp -> requestBody.put("temperature", temp));
+            }
             requestBody.put("stream", true);
             requestBody.put("max_tokens", 4096); // Configurable limit
             
@@ -194,7 +197,14 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
                 // For tool (function) responses
                 var functionCall = message.getFunctionCall();
                 messagePayload.put("tool_call_id", functionCall.id());
-                messagePayload.put("content", message.getContent());
+                messagePayload.put("content", message.getContent() != null ? message.getContent() : "");
+                return messagePayload;
+            }
+
+            // A tool message without a FunctionCall still needs tool_call_id, or DeepSeek rejects it
+            if ("tool".equals(role)) {
+                messagePayload.put("tool_call_id", "");
+                messagePayload.put("content", message.getContent() != null ? message.getContent() : "");
                 return messagePayload;
             }
             
@@ -220,6 +230,12 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
                     // If parsing fails, use the arguments as a string
                     function.put("arguments", functionCall.arguments());
                 }
+                // Thinking mode requires the reasoning content associated with a tool call
+                // to be echoed back on subsequent requests.
+                if (functionCall.thoughtSignature() != null && !functionCall.thoughtSignature().isEmpty()) {
+                    messagePayload.put("reasoning_content", functionCall.thoughtSignature());
+                }
+                
                 
                 toolCall.put("function", function);
                 toolCalls.add(toolCall);
@@ -275,7 +291,7 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
                 if ("assistant".equals(role) && (textContent == null || textContent.isBlank())) {
                     messagePayload.put("content", "");
                 } else {
-                    messagePayload.put("content", textContent);
+                    messagePayload.put("content", textContent != null ? textContent : "");
                 }
             }
             return messagePayload;
@@ -349,6 +365,7 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
                 {
                     String line;
                     String currentToolCallId = null;
+                    StringBuilder currentReasoningContent = new StringBuilder();
                     
                     while ((line = reader.readLine()) != null && !isCancelled.get())
                     {
@@ -377,8 +394,14 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
                                     var delta = choice.get("delta");
                                     
                                     if (delta != null) {
+                                        // Thinking-mode reasoning is streamed separately from visible content.
+                                        // Keep it for the assistant tool-call message; it must be echoed back.
+                                        if (delta.hasNonNull("reasoning_content")) {
+                                            currentReasoningContent.append(delta.get("reasoning_content").asText());
+                                        }
+
                                         // Handle content (regular text response)
-                                        if (delta.has("content")) {
+                                        if (delta.hasNonNull("content")) {
                                             String content = delta.get("content").asText();
                                             if (!content.isEmpty()) {
                                                 publisher.submit(new Incoming(Incoming.Type.CONTENT, content));
@@ -401,7 +424,7 @@ public class DeepSeekStreamJavaHttpClient extends AbstractLanguageModelClient
 										                // Publish the initial function call structure
 										                
 										                publisher.submit(new Incoming(Incoming.Type.FUNCTION_CALL,
-					                                        String.format( "\"function_call\" : { \n \"name\": \"%s\",\n \"id\": \"%s\",\n \"arguments\" :", functionName, currentToolCallId ) 
+					                                        String.format( "\"function_call\" : { \n \"name\": \"%s\",\n \"id\": \"%s\",\n \"thoughtSignature\": %s,\n \"arguments\" :", functionName, currentToolCallId, objectMapper.writeValueAsString(currentReasoningContent.toString()) ) 
 										                ));
 										            }
 										        }
